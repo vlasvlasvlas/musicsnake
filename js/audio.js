@@ -1,0 +1,368 @@
+/**
+ * SnakeSynth Web Audio Engine
+ * 4-Voice Polyphonic Synthesizer with Spiegel Arpeggiator, Stereo Delay, Reverb,
+ * and optional Web MIDI Output support.
+ */
+
+export class SynthEngine {
+  constructor() {
+    this.ctx = null;
+    this.isMuted = false;
+    this.masterVolume = 0.7;
+    this.polyphony = 4;
+    this.waveform = 'triangle'; // sine, triangle, sawtooth, square
+    
+    // Envelope
+    this.envelope = {
+      attack: 0.04,
+      decay: 0.25,
+      sustain: 0.6,
+      release: 0.5
+    };
+
+    // Filter
+    this.filterCutoff = 2200;
+    this.filterResonance = 4.0;
+
+    // Delay FX
+    this.delayTime = 0.35;
+    this.delayFeedback = 0.45;
+    this.delayMix = 0.35;
+
+    // Reverb FX
+    this.reverbMix = 0.4;
+    this.reverbDecay = 3.0;
+
+    // Arpeggiator / Clock
+    this.arpPattern = 'cycle'; // cycle, upDown, random, chord, drone
+    this.arpSpeedBpm = 120;
+    this.activeVoices = [true, true, true, true]; // Voices 1, 2, 3, 4
+    this.arpStep = 0;
+
+    // MIDI Output
+    this.midiOutput = null;
+    this.midiEnabled = false;
+
+    // Active continuous voices for Drone mode
+    this.droneNodes = [];
+  }
+
+  async init() {
+    if (this.ctx) {
+      if (this.ctx.state === 'suspended') {
+        await this.ctx.resume();
+      }
+      return;
+    }
+
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    this.ctx = new AudioContext();
+
+    // Master Gain & Limiter
+    this.masterGainNode = this.ctx.createGain();
+    this.masterGainNode.gain.setValueAtTime(this.masterVolume, this.ctx.currentTime);
+
+    this.limiter = this.ctx.createDynamicsCompressor();
+    this.limiter.threshold.setValueAtTime(-2.0, this.ctx.currentTime);
+    this.limiter.knee.setValueAtTime(6.0, this.ctx.currentTime);
+    this.limiter.ratio.setValueAtTime(12.0, this.ctx.currentTime);
+    this.limiter.attack.setValueAtTime(0.003, this.ctx.currentTime);
+    this.limiter.release.setValueAtTime(0.15, this.ctx.currentTime);
+
+    // Filter
+    this.mainFilter = this.ctx.createBiquadFilter();
+    this.mainFilter.type = 'lowpass';
+    this.mainFilter.frequency.setValueAtTime(this.filterCutoff, this.ctx.currentTime);
+    this.mainFilter.Q.setValueAtTime(this.filterResonance, this.ctx.currentTime);
+
+    // Delay Node Setup
+    this.setupDelay();
+
+    // Reverb Impulse Setup
+    this.setupReverb();
+
+    // Routing
+    // Synth -> Filter -> Delay & Reverb & Dry -> Limiter -> Master -> Destination
+    this.dryGain = this.ctx.createGain();
+    this.dryGain.gain.setValueAtTime(0.8, this.ctx.currentTime);
+
+    this.mainFilter.connect(this.dryGain);
+    this.mainFilter.connect(this.delayIn);
+    this.mainFilter.connect(this.reverbIn);
+
+    this.dryGain.connect(this.limiter);
+    this.delayOut.connect(this.limiter);
+    this.reverbOut.connect(this.limiter);
+
+    this.limiter.connect(this.masterGainNode);
+    this.masterGainNode.connect(this.ctx.destination);
+
+    // Try MIDI initialization
+    this.initMidi();
+  }
+
+  setupDelay() {
+    this.delayIn = this.ctx.createGain();
+    this.delayNode = this.ctx.createDelay(2.0);
+    this.delayNode.delayTime.setValueAtTime(this.delayTime, this.ctx.currentTime);
+
+    this.delayFeedbackNode = this.ctx.createGain();
+    this.delayFeedbackNode.gain.setValueAtTime(this.delayFeedback, this.ctx.currentTime);
+
+    // Delay damping filter
+    this.delayDamping = this.ctx.createBiquadFilter();
+    this.delayDamping.type = 'lowpass';
+    this.delayDamping.frequency.setValueAtTime(3200, this.ctx.currentTime);
+
+    this.delayOut = this.ctx.createGain();
+    this.delayOut.gain.setValueAtTime(this.delayMix, this.ctx.currentTime);
+
+    this.delayIn.connect(this.delayNode);
+    this.delayNode.connect(this.delayDamping);
+    this.delayDamping.connect(this.delayFeedbackNode);
+    this.delayFeedbackNode.connect(this.delayNode);
+    this.delayDamping.connect(this.delayOut);
+  }
+
+  setupReverb() {
+    this.reverbIn = this.ctx.createGain();
+    this.reverbOut = this.ctx.createGain();
+    this.reverbOut.gain.setValueAtTime(this.reverbMix, this.ctx.currentTime);
+
+    this.convolver = this.ctx.createConvolver();
+    this.generateReverbImpulse(this.reverbDecay);
+
+    this.reverbIn.connect(this.convolver);
+    this.convolver.connect(this.reverbOut);
+  }
+
+  generateReverbImpulse(duration = 2.8) {
+    if (!this.ctx) return;
+    const rate = this.ctx.sampleRate;
+    const length = rate * duration;
+    const impulse = this.ctx.createBuffer(2, length, rate);
+    const left = impulse.getChannelData(0);
+    const right = impulse.getChannelData(1);
+
+    for (let i = 0; i < length; i++) {
+      const decay = Math.exp(-i / (rate * (duration / 3)));
+      // Stereo ambient noise with exponential decay
+      left[i] = (Math.random() * 2 - 1) * decay;
+      right[i] = (Math.random() * 2 - 1) * decay;
+    }
+    this.convolver.buffer = impulse;
+  }
+
+  async initMidi() {
+    if (navigator.requestMIDIAccess) {
+      try {
+        const midiAccess = await navigator.requestMIDIAccess();
+        const outputs = Array.from(midiAccess.outputs.values());
+        if (outputs.length > 0) {
+          this.midiOutput = outputs[0];
+          this.midiEnabled = true;
+          console.log('MIDI Output connected:', this.midiOutput.name);
+        }
+      } catch (e) {
+        console.warn('Web MIDI not available or permission denied', e);
+      }
+    }
+  }
+
+  setMute(mute) {
+    this.isMuted = mute;
+    if (this.masterGainNode && this.ctx) {
+      this.masterGainNode.gain.setTargetAtTime(
+        this.isMuted ? 0 : this.masterVolume,
+        this.ctx.currentTime,
+        0.05
+      );
+    }
+  }
+
+  setMasterVolume(val) {
+    this.masterVolume = Math.max(0, Math.min(1, val));
+    if (this.masterGainNode && this.ctx && !this.isMuted) {
+      this.masterGainNode.gain.setTargetAtTime(this.masterVolume, this.ctx.currentTime, 0.05);
+    }
+  }
+
+  setWaveform(type) {
+    this.waveform = type;
+  }
+
+  setFilterCutoff(freq) {
+    this.filterCutoff = Math.max(80, Math.min(12000, freq));
+    if (this.mainFilter && this.ctx) {
+      this.mainFilter.frequency.setTargetAtTime(this.filterCutoff, this.ctx.currentTime, 0.04);
+    }
+  }
+
+  setDelayParams(time, feedback, mix) {
+    this.delayTime = time;
+    this.delayFeedback = feedback;
+    this.delayMix = mix;
+    if (this.ctx && this.delayNode) {
+      this.delayNode.delayTime.setTargetAtTime(this.delayTime, this.ctx.currentTime, 0.05);
+      this.delayFeedbackNode.gain.setTargetAtTime(this.delayFeedback, this.ctx.currentTime, 0.05);
+      this.delayOut.gain.setTargetAtTime(this.delayMix, this.ctx.currentTime, 0.05);
+    }
+  }
+
+  setReverbMix(mix) {
+    this.reverbMix = mix;
+    if (this.reverbOut && this.ctx) {
+      this.reverbOut.gain.setTargetAtTime(this.reverbMix, this.ctx.currentTime, 0.05);
+    }
+  }
+
+  /**
+   * Plays a single note for a specific voice
+   */
+  triggerVoiceNote(freq, voiceIndex, duration = 0.3, velocity = 0.8) {
+    if (!this.ctx || this.isMuted || !freq || freq <= 0) return;
+    const now = this.ctx.currentTime;
+
+    // Polyphonic Stereo Panning
+    const panNode = this.ctx.createStereoPanner ? this.ctx.createStereoPanner() : null;
+    const pans = [-0.65, 0.65, -0.25, 0.25];
+    if (panNode) {
+      panNode.pan.setValueAtTime(pans[voiceIndex % 4], now);
+    }
+
+    // Voice Oscillator & Sub-oscillator for warmth
+    const osc = this.ctx.createOscillator();
+    osc.type = this.waveform;
+    osc.frequency.setValueAtTime(freq, now);
+
+    // Warm sub/chorus oscillator
+    const subOsc = this.ctx.createOscillator();
+    subOsc.type = 'sine';
+    subOsc.frequency.setValueAtTime(freq * 0.5, now); // 1 octave lower sub
+
+    const voiceGain = this.ctx.createGain();
+    const env = this.envelope;
+    const peakGain = (velocity * 0.22);
+
+    // ADSR Envelope
+    voiceGain.gain.setValueAtTime(0.0001, now);
+    voiceGain.gain.exponentialRampToValueAtTime(peakGain, now + env.attack);
+    voiceGain.gain.exponentialRampToValueAtTime(
+      Math.max(0.0001, peakGain * env.sustain),
+      now + env.attack + env.decay
+    );
+    voiceGain.gain.exponentialRampToValueAtTime(
+      0.0001,
+      now + duration + env.release
+    );
+
+    // Sub-osc mix
+    const subGain = this.ctx.createGain();
+    subGain.gain.setValueAtTime(0.2, now);
+    subOsc.connect(subGain);
+    subGain.connect(voiceGain);
+
+    osc.connect(voiceGain);
+
+    if (panNode) {
+      voiceGain.connect(panNode);
+      panNode.connect(this.mainFilter);
+    } else {
+      voiceGain.connect(this.mainFilter);
+    }
+
+    osc.start(now);
+    subOsc.start(now);
+    const stopTime = now + duration + env.release + 0.1;
+    osc.stop(stopTime);
+    subOsc.stop(stopTime);
+
+    // Send MIDI if output is available
+    if (this.midiEnabled && this.midiOutput) {
+      const midiNote = Math.round(69 + 12 * Math.log2(freq / 440));
+      this.sendMidiNote(midiNote, Math.floor(velocity * 127), duration);
+    }
+  }
+
+  /**
+   * Sound effect triggered when the snake eats an orb / food
+   */
+  triggerFoodSound(foodType = 'scale') {
+    if (!this.ctx || this.isMuted) return;
+    const now = this.ctx.currentTime;
+
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+
+    switch (foodType) {
+      case 'chord':
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(523.25, now); // C5
+        osc.frequency.exponentialRampToValueAtTime(1046.5, now + 0.2); // C6
+        break;
+      case 'tempo':
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(880, now);
+        osc.frequency.exponentialRampToValueAtTime(1760, now + 0.15);
+        break;
+      case 'filter':
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(300, now);
+        osc.frequency.exponentialRampToValueAtTime(900, now + 0.25);
+        break;
+      case 'reverb':
+      case 'scale':
+      default:
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(440, now);
+        osc.frequency.exponentialRampToValueAtTime(880, now + 0.18);
+        break;
+    }
+
+    gain.gain.setValueAtTime(0.25, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+
+    osc.connect(gain);
+    gain.connect(this.delayIn);
+    gain.connect(this.reverbIn);
+    gain.connect(this.limiter);
+
+    osc.start(now);
+    osc.stop(now + 0.35);
+  }
+
+  /**
+   * Sound effect for wall bounce / wrap
+   */
+  triggerImpactSound() {
+    if (!this.ctx || this.isMuted) return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(140, now);
+    osc.frequency.exponentialRampToValueAtTime(40, now + 0.18);
+
+    gain.gain.setValueAtTime(0.3, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+
+    osc.connect(gain);
+    gain.connect(this.limiter);
+
+    osc.start(now);
+    osc.stop(now + 0.2);
+  }
+
+  sendMidiNote(note, velocity = 90, duration = 0.3) {
+    if (!this.midiOutput) return;
+    const ch = 0x90; // Note On ch 1
+    const chOff = 0x80; // Note Off ch 1
+    this.midiOutput.send([ch, note, velocity]);
+    setTimeout(() => {
+      if (this.midiOutput) {
+        this.midiOutput.send([chOff, note, 0]);
+      }
+    }, duration * 1000);
+  }
+}

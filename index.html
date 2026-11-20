@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MusicSnake</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <!-- Corner icons -->
+  <div class="corner-tl">MUSICSNAKE</div>
+  <div class="corner-tr">
+    <button id="btnMute" class="icon-btn" title="Mute">♪</button>
+    <button id="btnAbout" class="icon-btn" title="Acerca de">?</button>
+    <button id="btnSettings" class="icon-btn" title="Settings">⚙</button>
+  </div>
+
+  <!-- Nokia frame + canvas -->
+  <main class="nokia-main">
+    <div class="nokia-frame">
+      <canvas id="musicCanvas"></canvas>
+      <div class="nokia-vignette"></div>
+    </div>
+    <!-- HUD below frame like playsnake.org -->
+    <div class="nokia-hud">
+      <span id="readoutScore">0</span>
+      <span id="readoutCenter"></span>
+      <span id="readoutLength">L:4</span>
+    </div>
+  </main>
+
+  <!-- Settings panel (hidden by default) -->
+  <div id="settingsPanel" class="settings-panel hidden">
+    <div class="settings-header">
+      <span>SETTINGS</span>
+      <button id="btnCloseSettings" class="icon-btn">✕</button>
+    </div>
+
+    <div class="settings-body">
+
+      <div class="set-row">
+        <label class="toggle-row">
+          <input type="checkbox" id="chkMutate">
+          Mutar parámetros al comer
+        </label>
+      </div>
+
+      <div class="set-row">
+        <label>Grilla N×N</label>
+        <select id="selGrid">
+          <option value="16">16×16 (Minimalista)</option>
+          <option value="24">24×24 (Clásico)</option>
+          <option value="28" selected>28×28 (Default)</option>
+          <option value="32">32×32 (Sinfónico)</option>
+          <option value="48">48×48 (Atractor)</option>
+        </select>
+      </div>
+
+      <div class="set-row">
+        <label>Preset</label>
+        <select id="selPreset"></select>
+      </div>
+
+      <div class="set-row">
+        <label>Modo</label>
+        <div class="btn-pair">
+          <button id="btnModeAuto" class="set-btn active">AUTO</button>
+          <button id="btnModeGame" class="set-btn">JUEGO</button>
+        </div>
+      </div>
+
+      <div class="set-row">
+        <button id="btnPlayPause" class="set-btn full">▶ PLAY</button>
+        <button id="btnReset" class="set-btn full">↻ RESET</button>
+      </div>
+
+      <div class="set-row">
+        <label>Escala</label>
+        <select id="selScale"></select>
+      </div>
+
+      <div class="set-row">
+        <label>Tónica</label>
+        <select id="selRoot"></select>
+      </div>
+
+      <div class="set-row">
+        <label>Relación entre voces</label>
+        <select id="selTreatment"></select>
+      </div>
+
+      <div class="set-row">
+        <label>Timbre</label>
+        <select id="selWaveform">
+          <option value="triangle">Cálido (triangular)</option>
+          <option value="sawtooth">Brillante (sierra)</option>
+          <option value="sine">Puro (senoidal)</option>
+          <option value="square">Chiptune (cuadrada)</option>
+        </select>
+      </div>
+
+      <div class="set-row">
+        <label>Orden de voces</label>
+        <select id="selArpPattern">
+          <option value="cycle">Secuencial 1-2-3-4</option>
+          <option value="upDown">Ida y vuelta</option>
+          <option value="random">Aleatorio</option>
+          <option value="chord">Todas juntas</option>
+          <option value="drone">Sostenido</option>
+        </select>
+      </div>
+
+      <div class="set-row">
+        <label>Movimiento autónomo</label>
+        <select id="selAutoBehavior">
+          <option value="harmonicSeeker">Busca las notas</option>
+          <option value="lissajous">Figuras ondulantes</option>
+          <option value="brownian">Deriva aleatoria suave</option>
+          <option value="mouseFollow">Sigue el mouse</option>
+        </select>
+      </div>
+
+      <div class="set-row">
+        <label>Al llegar al borde</label>
+        <select id="selWallMode">
+          <option value="wrap">Reaparece del lado opuesto</option>
+          <option value="bounce">Rebota</option>
+          <option value="classic">Muere (modo clásico)</option>
+        </select>
+      </div>
+
+      <div class="set-row">
+        <label>BPM <span id="valBpm" class="val">110</span></label>
+        <input type="range" id="sliderBpm" min="20" max="600" step="1" value="110">
+      </div>
+
+      <div class="set-row">
+        <label>Cutoff <span id="valCutoff" class="val">2400 Hz</span></label>
+        <input type="range" id="sliderCutoff" min="200" max="8000" step="50" value="2400">
+      </div>
+
+      <div class="set-row">
+        <label>Resonancia <span id="valRes" class="val">3.5</span></label>
+        <input type="range" id="sliderRes" min="0.5" max="12.0" step="0.5" value="3.5">
+      </div>
+
+      <div class="set-row">
+        <label>Delay <span id="valDelay" class="val">35%</span></label>
+        <input type="range" id="sliderDelay" min="0" max="0.9" step="0.05" value="0.35">
+      </div>
+
+      <div class="set-row">
+        <label>Reverb <span id="valReverb" class="val">40%</span></label>
+        <input type="range" id="sliderReverb" min="0" max="0.95" step="0.05" value="0.4">
+      </div>
+
+      <!-- hidden readouts needed by app.js -->
+      <span id="midiStatus" style="display:none"></span>
+      <span id="readoutMode" style="display:none">AUTOMÁTICO</span>
+      <span id="readoutTreatment" style="display:none">Contrary Motion</span>
+      <span id="readoutScale" style="display:none">C Pentatonic Major</span>
+
+    </div>
+  </div>
+
+  <!-- About modal -->
+  <div id="aboutOverlay" class="overlay hidden">
+    <div class="modal-card about-card">
+      <div class="modal-title">MUSICSNAKE</div>
+
+      <p>Una víbora que toca música.</p>
+
+      <p>Basado en <strong>Music Mouse: An Intelligent Instrument</strong> de <strong>Laurie Spiegel</strong> (1986), software que convertía el movimiento del cursor en música polifónica de 4 voces. Acá la víbora hace lo mismo: su cabeza, cuerpo y cola controlan soprano, alto, tenor y bajo en tiempo real.</p>
+
+      <p><strong>Cómo se usa:</strong><br>
+      Modo auto — se mueve solo, generando música.<br>
+      Modo juego — flechas o WASD para dirigirla.<br>
+      En cualquier modo, el mouse sobre el canvas la guía.<br>
+      Los orbes cambian escala, voicing y efectos al ser comidos.</p>
+
+      <p><a href="https://github.com/vlasvlasvlas/musicsnake" target="_blank">github.com/vlasvlasvlas/musicsnake</a></p>
+
+      <button id="btnCloseAbout" class="set-btn full">cerrar</button>
+    </div>
+  </div>
+
+  <!-- Welcome overlay -->
+  <div id="startOverlay" class="overlay">
+    <div class="modal-card">
+      <div class="modal-title">MUSICSNAKE</div>
+      <p>Music Mouse × Snake Automata</p>
+      <p class="modal-sub">Laurie Spiegel (1986) · 4 voces polifónicas</p>
+      <button id="btnStart" class="set-btn full">▶ INICIAR</button>
+    </div>
+  </div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

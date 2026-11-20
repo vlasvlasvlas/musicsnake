@@ -1,0 +1,312 @@
+/* Nokia LCD palette — colores exactos de playsnake.org */
+:root {
+  --nokia-outer:  #9bba5a;   /* body background */
+  --nokia-board:  #aacc66;   /* board interior (#ac6) */
+  --nokia-dark:   rgba(0,0,0,0.75);
+  --nokia-mid:    rgba(0,0,0,0.4);
+  --font-mono: 'Courier New', monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+
+body {
+  background: var(--nokia-outer);
+  color: var(--nokia-dark);
+  font-family: var(--font-mono);
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: padding-right 0.2s ease;
+}
+
+body.settings-open {
+  padding-right: 280px;
+}
+
+/* Corner labels */
+.corner-tl {
+  position: fixed;
+  top: 14px;
+  left: 18px;
+  font-size: 1.1rem;
+  font-weight: bold;
+  letter-spacing: 3px;
+  color: var(--nokia-dark);
+  opacity: 0.75;
+}
+
+.corner-tr {
+  position: fixed;
+  top: 8px;
+  right: 14px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.icon-btn {
+  background: none;
+  border: none;
+  color: var(--nokia-dark);
+  font-size: 2.8rem;
+  cursor: pointer;
+  opacity: 0.75;
+  padding: 6px 10px;
+  font-family: inherit;
+  line-height: 1;
+}
+.icon-btn:hover { opacity: 1; }
+
+/* Main Nokia frame layout */
+.nokia-main {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.nokia-frame {
+  position: relative;
+  outline: 4px solid rgba(0,0,0,0.75);
+  line-height: 0;
+}
+
+/* inset shadow — el efecto "difuminado Nokia" de playsnake.org */
+.nokia-vignette {
+  position: absolute;
+  inset: 0;
+  box-shadow: inset 0 0 60px rgba(48,80,0,0.3);
+  pointer-events: none;
+  z-index: 5;
+}
+
+canvas {
+  display: block;
+  /* fills available space, constrained to 4:3 by the frame */
+  width: 100%;
+  height: 100%;
+  cursor: crosshair;
+}
+
+/* Nokia frame fills most of the viewport, keeps 4:3 */
+.nokia-main {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 60px 0 0;
+}
+
+.nokia-frame {
+  position: relative;
+  outline: 4px solid rgba(0,0,0,0.75);
+  line-height: 0;
+  /* 4:3 aspect, fills available height with margin for HUD */
+  width:  min(92vw, calc((100vh - 90px) * 1.333));
+  height: min(69vw, calc(100vh - 90px));
+}
+
+/* HUD below frame */
+.nokia-hud {
+  width: min(92vw, calc((100vh - 90px) * 1.333));
+  display: flex;
+  justify-content: space-between;
+  font-size: clamp(12px, 1.8vw, 18px);
+  font-weight: bold;
+  color: var(--nokia-dark);
+  padding: 0 2px;
+}
+
+/* Notification inside frame */
+.notification-banner {
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--nokia-outer);
+  border: 1px solid var(--nokia-dark);
+  padding: 3px 10px;
+  font-size: 0.72rem;
+  color: var(--nokia-dark);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s;
+  white-space: nowrap;
+  z-index: 10;
+}
+.notification-banner.visible { opacity: 1; }
+
+/* Settings panel */
+.settings-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 280px;
+  height: 100vh;
+  background: var(--nokia-outer);
+  border-left: 2px solid var(--nokia-dark);
+  overflow-y: auto;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-panel.hidden { display: none; }
+
+.settings-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 14px;
+  border-bottom: 2px solid var(--nokia-dark);
+  font-size: 0.8rem;
+  font-weight: bold;
+  letter-spacing: 1px;
+}
+
+.settings-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+}
+
+.set-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.set-row label {
+  font-size: 0.7rem;
+  opacity: 0.7;
+  display: flex;
+  justify-content: space-between;
+}
+
+.toggle-row {
+  flex-direction: row !important;
+  justify-content: flex-start !important;
+  gap: 8px;
+  align-items: center;
+  cursor: pointer;
+  opacity: 0.85 !important;
+}
+
+.val {
+  font-size: 0.7rem;
+  font-weight: bold;
+  color: var(--nokia-dark);
+}
+
+select {
+  font-family: inherit;
+  font-size: 0.75rem;
+  background: var(--nokia-board);
+  border: 1px solid var(--nokia-dark);
+  color: var(--nokia-dark);
+  padding: 4px 6px;
+  border-radius: 0;
+  outline: none;
+  width: 100%;
+  cursor: pointer;
+}
+
+input[type="range"] {
+  width: 100%;
+  appearance: none;
+  height: 4px;
+  background: var(--nokia-dark);
+  border-radius: 0;
+  outline: none;
+}
+input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 0;
+  background: var(--nokia-dark);
+  cursor: pointer;
+}
+
+/* Buttons */
+.set-btn {
+  font-family: inherit;
+  font-size: 0.75rem;
+  font-weight: bold;
+  background: var(--nokia-outer);
+  border: 1px solid var(--nokia-dark);
+  color: var(--nokia-dark);
+  padding: 6px 10px;
+  cursor: pointer;
+  border-radius: 0;
+}
+.set-btn:hover, .set-btn.active {
+  background: var(--nokia-dark);
+  color: var(--nokia-outer);
+}
+.set-btn.full { width: 100%; }
+
+.btn-pair {
+  display: flex;
+  gap: 4px;
+}
+.btn-pair .set-btn { flex: 1; }
+
+/* Welcome overlay */
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(141, 168, 64, 0.92);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.overlay.hidden { display: none; }
+
+.modal-card {
+  background: var(--nokia-outer);
+  border: 3px solid var(--nokia-dark);
+  padding: 28px 32px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 260px;
+}
+
+.about-card {
+  max-width: 480px;
+  text-align: left;
+}
+
+.about-card p {
+  font-size: 0.82rem;
+  line-height: 1.6;
+}
+
+.about-card a {
+  color: var(--nokia-dark);
+  font-weight: bold;
+  text-decoration: underline;
+}
+
+.modal-title {
+  font-size: 1.4rem;
+  font-weight: bold;
+  letter-spacing: 3px;
+  color: var(--nokia-dark);
+}
+
+.modal-card p {
+  font-size: 0.8rem;
+  color: var(--nokia-dark);
+  opacity: 0.8;
+}
+
+.modal-sub { font-size: 0.72rem; opacity: 0.6; }
