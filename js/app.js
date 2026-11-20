@@ -96,7 +96,9 @@ class SnakeSynthApp {
     this.snake = new Snake(this.gridSize, this.gridSize);
     this.foodManager = new FoodManager(this.gridSize, this.gridSize);
 
-    this.mutateOnEat = false; // default: no parameter mutations
+    this.mutateOnEat = false;
+    this.isMobile = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+    if (this.isMobile) document.body.classList.add('mobile');
 
     this.canvas = document.getElementById('musicCanvas');
     this.renderer = new Renderer(this.canvas);
@@ -354,34 +356,60 @@ class SnakeSynthApp {
   }
 
   bindCanvasInteraction() {
-    const handleCoord = (clientX, clientY) => {
+    // Mouse (desktop)
+    const handleMouseCoord = (clientX, clientY) => {
       const rect = this.canvas.getBoundingClientRect();
       const nx = Math.max(0, Math.min(0.999, (clientX - rect.left) / rect.width));
       const ny = Math.max(0, Math.min(0.999, (clientY - rect.top) / rect.height));
       const targetGridX = Math.floor(nx * this.gridSize);
       const targetGridY = Math.floor(ny * this.gridSize);
-
       if (this.mode === 'auto') {
         this.snake.mouseTarget = { x: targetGridX, y: targetGridY };
       } else {
-        // Direct steering towards mouse in Game mode
         this.snake.steerTowards(this.snake.getHead(), { x: targetGridX, y: targetGridY });
       }
     };
 
-    this.canvas.addEventListener('mousemove', (e) => {
-      handleCoord(e.clientX, e.clientY);
-    });
+    this.canvas.addEventListener('mousemove', (e) => handleMouseCoord(e.clientX, e.clientY));
+    this.canvas.addEventListener('mouseleave', () => { this.snake.mouseTarget = null; });
 
-    this.canvas.addEventListener('touchmove', (e) => {
+    // Touch (mobile) — swipe angle → dirección cardinal
+    let touchStart = null;
+
+    this.canvas.addEventListener('touchstart', (e) => {
       if (e.touches.length > 0) {
-        handleCoord(e.touches[0].clientX, e.touches[0].clientY);
+        touchStart = { x: e.touches[0].clientX, y: e.touches[0].clientY };
       }
     }, { passive: true });
 
-    this.canvas.addEventListener('mouseleave', () => {
-      this.snake.mouseTarget = null;
-    });
+    this.canvas.addEventListener('touchmove', (e) => {
+      if (!touchStart || e.touches.length === 0) return;
+      const dx = e.touches[0].clientX - touchStart.x;
+      const dy = e.touches[0].clientY - touchStart.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < 18) return; // umbral mínimo de swipe
+
+      if (this.mode === 'auto') {
+        // en auto: guía con posición del dedo
+        const rect = this.canvas.getBoundingClientRect();
+        const nx = Math.max(0, Math.min(0.999, (e.touches[0].clientX - rect.left) / rect.width));
+        const ny = Math.max(0, Math.min(0.999, (e.touches[0].clientY - rect.top) / rect.height));
+        this.snake.mouseTarget = {
+          x: Math.floor(nx * this.gridSize),
+          y: Math.floor(ny * this.gridSize)
+        };
+      } else {
+        // en juego: swipe → dirección cardinal
+        const angle = (Math.atan2(dy, dx) / Math.PI * 180 + 360) % 360;
+        if (angle >= 45 && angle < 135)       this.snake.setDirection(0,  1);  // abajo
+        else if (angle >= 135 && angle < 225) this.snake.setDirection(-1, 0);  // izquierda
+        else if (angle >= 225 && angle < 315) this.snake.setDirection(0, -1);  // arriba
+        else                                   this.snake.setDirection(1,  0);  // derecha
+        touchStart = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      }
+    }, { passive: true });
+
+    this.canvas.addEventListener('touchend', () => { touchStart = null; });
   }
 
   handleKeyDown(e) {

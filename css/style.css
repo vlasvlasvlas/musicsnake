@@ -310,3 +310,52 @@ input[type="range"]::-webkit-slider-thumb {
 }
 
 .modal-sub { font-size: 0.72rem; opacity: 0.6; }
+
+/* ── Mobile ─────────────────────────────────────────── */
+body.mobile {
+  padding: 0;
+}
+
+body.mobile .corner-tl {
+  font-size: 0.75rem;
+  top: 10px;
+  left: 10px;
+}
+
+body.mobile .corner-tr {
+  top: 6px;
+  right: 8px;
+  gap: 4px;
+}
+
+body.mobile .icon-btn {
+  font-size: 2rem;
+  padding: 4px 6px;
+}
+
+body.mobile .nokia-main {
+  padding-top: 48px;
+  gap: 6px;
+}
+
+/* Canvas ocupa todo el ancho disponible en móvil */
+body.mobile .nokia-frame {
+  width:  min(98vw, calc((100vh - 72px) * 1.333));
+  height: min(73.5vw, calc(100vh - 72px));
+}
+
+body.mobile .nokia-hud {
+  width: min(98vw, calc((100vh - 72px) * 1.333));
+  font-size: clamp(11px, 3.5vw, 16px);
+}
+
+/* Panel de settings fullscreen en móvil */
+body.mobile .settings-panel {
+  width: 100vw;
+  border-left: none;
+  border-top: 2px solid var(--nokia-dark);
+}
+
+body.mobile.settings-open {
+  padding-right: 0;
+}
