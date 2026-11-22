@@ -653,15 +653,20 @@ class SnakeSynthApp {
 
     const { hitBoundary, hitSelf } = this.snake.step();
 
-    if (hitSelf && this.snake.isDead) {
+    // Muda de piel (Feature C — spec §5.3):
+    // En modo classic, cualquier colisión (pared o propia cola) replega
+    // la víbora a 1 segmento sin pausar el audio. La víbora vuelve al
+    // punto de arranque — una sola voz humana (soprano) — como el
+    // "silencio restaurado" que Spiegel describía en 1986 ("the way to
+    // keep it silent is to just not play it"). La música sigue, la
+    // víbora re-crece.
+    if (this.snake.isDead) {
       this.synth.triggerImpactSound();
-      // Musical reset: "Muda de piel" without stopping audio flow
-      this.snake.segments = this.snake.segments.slice(0, 4);
+      this.snake.segments = this.snake.segments.slice(0, 1);
+      this.snake.growthQueue = 0;
       this.snake.isDead = false;
-      this.notify('✦ MUDA DE PIEL: Acorde de choque & reducción armónica ✦');
-    }
-
-    if (hitBoundary) {
+    } else if (hitBoundary) {
+      // Rebote o wrap — impacto sonoro pero sin muda.
       this.synth.triggerImpactSound();
     }
 
