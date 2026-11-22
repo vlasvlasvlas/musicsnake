@@ -26,7 +26,8 @@ export const PRESETS = {
     arpPattern: 'chord',
     autoBehavior: 'harmonicSeeker',
     pattern: 'p2',
-    symmetry: 'contrary'
+    symmetry: 'contrary',
+    articulation: 'halfLegato'
   },
   ambientLydian: {
     name: 'Lydian Dreamscape',
@@ -43,7 +44,8 @@ export const PRESETS = {
     arpPattern: 'drone',
     autoBehavior: 'lissajous',
     pattern: 'p4',
-    symmetry: 'parallel'
+    symmetry: 'parallel',
+    articulation: 'fullLegato'
   },
   berlinArp: {
     name: 'Berlin School Arp',
@@ -60,7 +62,8 @@ export const PRESETS = {
     arpPattern: 'upDown',
     autoBehavior: 'harmonicSeeker',
     pattern: 'p1',
-    symmetry: 'parallel'
+    symmetry: 'parallel',
+    articulation: 'staccato'
   },
   kotoZen: {
     name: 'Hirajōshi Zen Garden',
@@ -77,7 +80,8 @@ export const PRESETS = {
     arpPattern: 'cycle',
     autoBehavior: 'brownian',
     pattern: 'off',
-    symmetry: 'parallel'
+    symmetry: 'parallel',
+    articulation: 'fullLegato'
   },
   acidSlither: {
     name: 'Acid Slither',
@@ -94,7 +98,8 @@ export const PRESETS = {
     arpPattern: 'random',
     autoBehavior: 'lissajous',
     pattern: 'p8',
-    symmetry: 'contrary'
+    symmetry: 'contrary',
+    articulation: 'staccato'
   }
 };
 
@@ -120,6 +125,9 @@ class SnakeSynthApp {
     this.currentPattern = 'off';
     this.currentSymmetry = 'parallel';
     this.patternStep = 0;
+
+    // Articulation (Feature F — spec §5.6)
+    this.articulation = 'halfLegato';
 
     // Components
     this.music = new MusicTheory(0, 'pentatonicMajor', 2, 4);
@@ -167,6 +175,7 @@ class SnakeSynthApp {
       selTreatment: document.getElementById('selTreatment'),
       selPattern: document.getElementById('selPattern'),
       selSymmetry: document.getElementById('selSymmetry'),
+      selArticulation: document.getElementById('selArticulation'),
       selWaveform: document.getElementById('selWaveform'),
       selArpPattern: document.getElementById('selArpPattern'),
       selAutoBehavior: document.getElementById('selAutoBehavior'),
@@ -328,12 +337,16 @@ class SnakeSynthApp {
 
     // Musical Selectors
     this.ui.selScale.addEventListener('change', (e) => {
+      // Review Focus #2: release any live full-legato oscillators so they
+      // do not keep ringing at the old scale's pitches.
+      this.synth.releaseAllVoices(0.15);
       this.music.setScale(e.target.value);
       this.updateStatusReadouts();
       this.notify(`Scale changed to ${SCALES[e.target.value].name}`);
     });
 
     this.ui.selRoot.addEventListener('change', (e) => {
+      this.synth.releaseAllVoices(0.15);
       this.music.setRoot(parseInt(e.target.value, 10));
       this.updateStatusReadouts();
       this.notify(`Root set to ${NOTES[e.target.value]}`);
@@ -353,6 +366,15 @@ class SnakeSynthApp {
 
     this.ui.selSymmetry.addEventListener('change', (e) => {
       this.currentSymmetry = e.target.value;
+    });
+
+    this.ui.selArticulation.addEventListener('change', (e) => {
+      this.articulation = e.target.value;
+      // Switching away from fullLegato lets lingering oscillators fade out
+      // instead of hanging indefinitely.
+      if (this.articulation !== 'fullLegato') {
+        this.synth.releaseAllVoices(0.12);
+      }
     });
 
     this.ui.selWaveform.addEventListener('change', (e) => {
@@ -601,6 +623,7 @@ class SnakeSynthApp {
 
   setScaleByKey(scaleKey) {
     if (SCALES[scaleKey]) {
+      this.synth.releaseAllVoices(0.15); // Review Focus #2
       this.music.setScale(scaleKey);
       this.ui.selScale.value = scaleKey;
       this.updateStatusReadouts();
@@ -624,6 +647,7 @@ class SnakeSynthApp {
     this.currentPattern = p.pattern ?? this.currentPattern;
     this.currentSymmetry = p.symmetry ?? this.currentSymmetry;
     this.patternStep = 0;
+    this.articulation = p.articulation ?? this.articulation;
     this.snake.autoBehavior = p.autoBehavior;
 
     // Sliders
@@ -639,6 +663,7 @@ class SnakeSynthApp {
     this.ui.selTreatment.value = p.treatment;
     this.ui.selPattern.value = this.currentPattern;
     this.ui.selSymmetry.value = this.currentSymmetry;
+    this.ui.selArticulation.value = this.articulation;
     this.ui.selWaveform.value = p.waveform;
     this.ui.selArpPattern.value = p.arpPattern;
     this.ui.selAutoBehavior.value = p.autoBehavior;
@@ -702,6 +727,11 @@ class SnakeSynthApp {
       this.snake.segments = this.snake.segments.slice(0, 1);
       this.snake.growthQueue = 0;
       this.snake.isDead = false;
+      // Feature F: release hanging full-legato oscillators on voices
+      // 2/3/4 so they do not drone through the repli­egue.
+      this.synth.releaseVoice(1, 0.2);
+      this.synth.releaseVoice(2, 0.2);
+      this.synth.releaseVoice(3, 0.2);
     } else if (hitBoundary) {
       // Rebote o wrap — impacto sonoro pero sin muda.
       this.synth.triggerImpactSound();
@@ -799,7 +829,7 @@ class SnakeSynthApp {
       // Play all 4 voices simultaneously!
       voices.forEach((v, idx) => {
         if (v.note) {
-          this.synth.triggerVoiceNote(v.note.freq, idx, dur * 1.5, 0.7);
+          this.synth.triggerVoiceNote(v.note.freq, idx, dur * 1.5, 0.7, this.articulation);
         }
       });
     } else if (pattern === 'upDown') {
@@ -810,21 +840,21 @@ class SnakeSynthApp {
       const idx = order[this.voiceStep % order.length];
       const v = voices[idx];
       if (v && v.note) {
-        this.synth.triggerVoiceNote(v.note.freq, idx, dur, 0.85);
+        this.synth.triggerVoiceNote(v.note.freq, idx, dur, 0.85, this.articulation);
       }
       this.voiceStep++;
     } else if (pattern === 'random') {
       const idx = Math.floor(Math.random() * voices.length);
       const v = voices[idx];
       if (v && v.note) {
-        this.synth.triggerVoiceNote(v.note.freq, idx, dur, 0.85);
+        this.synth.triggerVoiceNote(v.note.freq, idx, dur, 0.85, this.articulation);
       }
     } else {
       // 'cycle' (0 -> 1 -> 2 -> 3)
       const idx = this.voiceStep % voices.length;
       const v = voices[idx];
       if (v && v.note) {
-        this.synth.triggerVoiceNote(v.note.freq, idx, dur, 0.85);
+        this.synth.triggerVoiceNote(v.note.freq, idx, dur, 0.85, this.articulation);
       }
       this.voiceStep++;
     }

@@ -45,6 +45,10 @@ export class SynthEngine {
 
     // Active continuous voices for Drone mode
     this.droneNodes = [];
+
+    // Per-voice active oscillators for retriggerable articulation modes
+    // (Feature F — spec §5.6). Each slot: { osc, subOsc, voiceGain, midiNote } | null
+    this.activeVoiceNodes = [null, null, null, null];
   }
 
   async init() {
@@ -217,11 +221,38 @@ export class SynthEngine {
   }
 
   /**
-   * Plays a single note for a specific voice
+   * Plays a single note for a specific voice. Articulation decides whether
+   * the oscillator fades out on a scheduled stop (staccato / halfLegato) or
+   * sustains until the next retrigger (fullLegato).
+   *
+   * @param {number} freq - Hz
+   * @param {number} voiceIndex - 0..3
+   * @param {number} duration - base duration seconds (caller's beat quantum)
+   * @param {number} velocity - 0..1
+   * @param {string} articulation - 'staccato' | 'halfLegato' | 'fullLegato'
    */
-  triggerVoiceNote(freq, voiceIndex, duration = 0.3, velocity = 0.8) {
+  triggerVoiceNote(freq, voiceIndex, duration = 0.3, velocity = 0.8, articulation = 'halfLegato') {
     if (!this.ctx || this.isMuted || !freq || freq <= 0) return;
     const now = this.ctx.currentTime;
+
+    // Full-legato: release any prior oscillator on this voice first so the
+    // new pitch takes over instead of stacking (Review Focus #2).
+    if (articulation === 'fullLegato' && this.activeVoiceNodes[voiceIndex]) {
+      this.releaseVoice(voiceIndex, 0.08);
+    }
+
+    // Articulation → effective sustain length.
+    // staccato: shortened to a tiny click
+    // halfLegato: as the caller supplied (preserves prior behavior)
+    // fullLegato: effectively infinite, we schedule a far-future stop as safety
+    let sustainLen;
+    if (articulation === 'staccato') {
+      sustainLen = Math.min(0.2, duration * 0.35);
+    } else if (articulation === 'fullLegato') {
+      sustainLen = 60; // 60 seconds; a retrigger or releaseVoice will truncate
+    } else {
+      sustainLen = duration;
+    }
 
     // Polyphonic Stereo Panning
     const panNode = this.ctx.createStereoPanner ? this.ctx.createStereoPanner() : null;
@@ -235,7 +266,6 @@ export class SynthEngine {
     osc.type = this.waveform;
     osc.frequency.setValueAtTime(freq, now);
 
-    // Warm sub/chorus oscillator
     const subOsc = this.ctx.createOscillator();
     subOsc.type = 'sine';
     subOsc.frequency.setValueAtTime(freq * 0.5, now); // 1 octave lower sub
@@ -244,17 +274,20 @@ export class SynthEngine {
     const env = this.envelope;
     const peakGain = (velocity * 0.22);
 
-    // ADSR Envelope
+    // ADSR Envelope — sustain plateau for fullLegato is just the sustain
+    // level held at sustainLen (no ramp to 0 until releaseVoice fires).
     voiceGain.gain.setValueAtTime(0.0001, now);
     voiceGain.gain.exponentialRampToValueAtTime(peakGain, now + env.attack);
     voiceGain.gain.exponentialRampToValueAtTime(
       Math.max(0.0001, peakGain * env.sustain),
       now + env.attack + env.decay
     );
-    voiceGain.gain.exponentialRampToValueAtTime(
-      0.0001,
-      now + duration + env.release
-    );
+    if (articulation !== 'fullLegato') {
+      voiceGain.gain.exponentialRampToValueAtTime(
+        0.0001,
+        now + sustainLen + env.release
+      );
+    }
 
     // Sub-osc mix
     const subGain = this.ctx.createGain();
@@ -273,14 +306,70 @@ export class SynthEngine {
 
     osc.start(now);
     subOsc.start(now);
-    const stopTime = now + duration + env.release + 0.1;
+    const stopTime = now + sustainLen + env.release + 0.1;
     osc.stop(stopTime);
     subOsc.stop(stopTime);
 
-    // Send MIDI if output is available
+    // Track the active slot so releaseVoice / releaseAllVoices can reach it.
+    const midiNote = Math.round(69 + 12 * Math.log2(freq / 440));
+    this.activeVoiceNodes[voiceIndex] = { osc, subOsc, voiceGain, midiNote, articulation };
+
+    // Non-legato slots self-clear after their scheduled stop so later
+    // retriggers don't try to release a dead osc.
+    if (articulation !== 'fullLegato') {
+      const nullAfterMs = (sustainLen + env.release + 0.12) * 1000;
+      setTimeout(() => {
+        if (this.activeVoiceNodes[voiceIndex]?.osc === osc) {
+          this.activeVoiceNodes[voiceIndex] = null;
+        }
+      }, nullAfterMs);
+    }
+
+    // MIDI output lifecycle (Review Focus #3):
+    //   staccato / halfLegato → paired Note Off via setTimeout as before
+    //   fullLegato → Note On now, Note Off deferred to releaseVoice
     if (this.midiEnabled && this.midiOutput) {
-      const midiNote = Math.round(69 + 12 * Math.log2(freq / 440));
-      this.sendMidiNote(midiNote, Math.floor(velocity * 127), duration);
+      if (articulation === 'fullLegato') {
+        this.midiOutput.send([0x90, midiNote, Math.floor(velocity * 127)]);
+      } else {
+        this.sendMidiNote(midiNote, Math.floor(velocity * 127), sustainLen);
+      }
+    }
+  }
+
+  /**
+   * Release a specific active voice. Sends MIDI Note Off, fades voiceGain
+   * over releaseSec, and schedules osc.stop. Safe to call on an empty slot.
+   */
+  releaseVoice(voiceIndex, releaseSec = 0.15) {
+    const slot = this.activeVoiceNodes[voiceIndex];
+    if (!slot || !this.ctx) return;
+    const now = this.ctx.currentTime;
+    const { osc, subOsc, voiceGain, midiNote } = slot;
+
+    try {
+      voiceGain.gain.cancelScheduledValues(now);
+      voiceGain.gain.setValueAtTime(Math.max(0.0001, voiceGain.gain.value), now);
+      voiceGain.gain.exponentialRampToValueAtTime(0.0001, now + releaseSec);
+    } catch (_) { /* node may be disconnected */ }
+
+    try { osc.stop(now + releaseSec + 0.02); } catch (_) { /* already stopped */ }
+    try { subOsc.stop(now + releaseSec + 0.02); } catch (_) {}
+
+    if (this.midiEnabled && this.midiOutput && typeof midiNote === 'number') {
+      try { this.midiOutput.send([0x80, midiNote, 0]); } catch (_) {}
+    }
+
+    this.activeVoiceNodes[voiceIndex] = null;
+  }
+
+  /**
+   * Release every active voice. Used on scale/root change (Review Focus #2)
+   * and on muda-de-piel repli­egue (spec §5.3 updated for Feature F).
+   */
+  releaseAllVoices(releaseSec = 0.15) {
+    for (let i = 0; i < this.activeVoiceNodes.length; i++) {
+      this.releaseVoice(i, releaseSec);
     }
   }
 
