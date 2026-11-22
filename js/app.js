@@ -940,7 +940,7 @@ class SnakeSynthApp {
         this.foodManager.foods,
         this.music,
         this.currentVoices,
-        this.mode === 'auto'
+        this.lastPlayingVoiceIdxs
       );
 
       requestAnimationFrame(loop);

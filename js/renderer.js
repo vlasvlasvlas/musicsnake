@@ -7,6 +7,10 @@
 const LCD_BOARD = '#aacc66';
 const LCD_INK   = 'rgba(0,0,0,0.75)';
 const LCD_MID   = 'rgba(0,0,0,0.4)';
+// Feature B: a lighter green in the same LCD hue family for voice
+// column/row highlights. Chosen to read as "the board glowing where
+// a voice is singing" rather than as an overlay in a foreign palette.
+const LCD_GLOW_RGB = '184, 212, 117';
 
 export class Renderer {
   constructor(canvas) {
@@ -30,7 +34,7 @@ export class Renderer {
     this.ripples.push({ x, y, r: 2, max: 28, a: 0.5 });
   }
 
-  render(snake, foods, musicTheory, voices = []) {
+  render(snake, foods, musicTheory, voices = [], playingVoiceIdxs = []) {
     const ctx = this.ctx;
     const w = this.width;
     const h = this.height;
@@ -45,10 +49,79 @@ export class Renderer {
     ctx.fillStyle = LCD_BOARD;
     ctx.fillRect(0, 0, w, h);
 
+    // Feature B: monochrome voice highlights go BELOW the snake and food
+    // so the interactive layer stays on top visually.
+    this.drawVoiceHighlights(ctx, snake, voices, playingVoiceIdxs, cw, ch);
+
     this.drawFoods(ctx, foods, cw, ch);
     this.drawSnake(ctx, snake, cw, ch);
     this.drawRipples(ctx);
     this.drawHUD(ctx, snake, voices, w, h);
+  }
+
+  /**
+   * Monochrome column/row highlights for the active Spiegel voices on
+   * the Nokia LCD grid (spec §5.2 + §10). Each voice marks a column, a
+   * row, or both; the board glows a lighter green there when the voice
+   * is sounding and a fainter shadow when it is just active-but-silent.
+   *
+   * Overlapping cells are deduped (highest alpha wins) so crossings do
+   * not stack into brighter-than-LCD cells.
+   */
+  drawVoiceHighlights(ctx, snake, activeVoices, playingVoiceIdxs, cw, ch) {
+    if (!activeVoices || activeVoices.length === 0) return;
+    const segs = snake.segments;
+    if (!segs || segs.length === 0) return;
+
+    const cols = snake.gridCols;
+    const rows = snake.gridRows;
+    const head = segs[0];
+    const midSeg = segs[Math.floor(segs.length / 2)] ?? head;
+    const tailSeg = segs[segs.length - 1] ?? head;
+
+    // Per spec §5.2: voice→position mapping
+    //   0 soprano = column of head.x
+    //   1 alto    = row of head.y
+    //   2 tenor   = column + row of midpoint
+    //   3 bass    = column + row of tail
+    const columns = [null, null, null, null];
+    const rowsArr = [null, null, null, null];
+    columns[0] = head.x;
+    rowsArr[1] = head.y;
+    columns[2] = midSeg.x;
+    rowsArr[2]  = midSeg.y;
+    columns[3] = tailSeg.x;
+    rowsArr[3]  = tailSeg.y;
+
+    // Dedup cells by (col,row) key, keeping highest alpha.
+    const cellAlpha = new Map();
+    const SOUNDING = 0.35;
+    const GHOST = 0.08;
+
+    const mark = (col, row, alpha) => {
+      if (col == null || row == null) return;
+      if (col < 0 || col >= cols || row < 0 || row >= rows) return;
+      const key = row * cols + col;
+      const prev = cellAlpha.get(key) ?? 0;
+      if (alpha > prev) cellAlpha.set(key, alpha);
+    };
+
+    for (let i = 0; i < activeVoices.length && i < 4; i++) {
+      const alpha = playingVoiceIdxs.includes(i) ? SOUNDING : GHOST;
+      if (columns[i] != null) {
+        for (let r = 0; r < rows; r++) mark(columns[i], r, alpha);
+      }
+      if (rowsArr[i] != null) {
+        for (let c = 0; c < cols; c++) mark(c, rowsArr[i], alpha);
+      }
+    }
+
+    for (const [key, alpha] of cellAlpha) {
+      const col = key % cols;
+      const row = Math.floor(key / cols);
+      ctx.fillStyle = `rgba(${LCD_GLOW_RGB}, ${alpha})`;
+      ctx.fillRect(col * cw, row * ch, cw, ch);
+    }
   }
 
   drawSnake(ctx, snake, cw, ch) {
