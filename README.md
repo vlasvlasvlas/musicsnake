@@ -105,12 +105,6 @@ Documentación de diseño: `docs/superpowers/specs/2026-11-22-spiegel-first-soun
 
 ---
 
-## Para compartir
-
-> MusicSnake: una víbora en el navegador que toca música. Cada paso en la grilla es una nota; cada orbe que come suma una voz hasta llegar a cuatro. Mecánica del Snake del Nokia, lógica musical de Music Mouse (Laurie Spiegel, 1986). Juega sola o la manejás. JavaScript, sin dependencias, corre en cualquier navegador.
-
----
-
 ## Créditos
 
 Homenaje a [**Laurie Spiegel**](https://retiary.org/ls/) y su *Music Mouse: An Intelligent Instrument* (1986) — software histórico que convertía el cursor del Mac en instrumento polifónico inteligente.
