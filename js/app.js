@@ -27,7 +27,8 @@ export const PRESETS = {
     autoBehavior: 'harmonicSeeker',
     pattern: 'p2',
     symmetry: 'contrary',
-    articulation: 'halfLegato'
+    articulation: 'halfLegato',
+    group: false
   },
   ambientLydian: {
     name: 'Lydian Dreamscape',
@@ -45,7 +46,8 @@ export const PRESETS = {
     autoBehavior: 'lissajous',
     pattern: 'p4',
     symmetry: 'parallel',
-    articulation: 'fullLegato'
+    articulation: 'fullLegato',
+    group: true
   },
   berlinArp: {
     name: 'Berlin School Arp',
@@ -63,7 +65,8 @@ export const PRESETS = {
     autoBehavior: 'harmonicSeeker',
     pattern: 'p1',
     symmetry: 'parallel',
-    articulation: 'staccato'
+    articulation: 'staccato',
+    group: false
   },
   kotoZen: {
     name: 'Hirajōshi Zen Garden',
@@ -81,7 +84,8 @@ export const PRESETS = {
     autoBehavior: 'brownian',
     pattern: 'off',
     symmetry: 'parallel',
-    articulation: 'fullLegato'
+    articulation: 'fullLegato',
+    group: true
   },
   acidSlither: {
     name: 'Acid Slither',
@@ -99,7 +103,8 @@ export const PRESETS = {
     autoBehavior: 'lissajous',
     pattern: 'p8',
     symmetry: 'contrary',
-    articulation: 'staccato'
+    articulation: 'staccato',
+    group: false
   }
 };
 
@@ -128,6 +133,12 @@ class SnakeSynthApp {
 
     // Articulation (Feature F — spec §5.6)
     this.articulation = 'halfLegato';
+
+    // Group behavior (Feature G — spec §5.7). Pre-pattern pitch diff
+    // against previousVoicePitches decides whether to retrigger.
+    this.groupMode = false;
+    this.previousVoicePitches = [null, null, null, null];
+    this.lastPlayingVoiceIdxs = []; // consumed by Task 8's highlight renderer
 
     // Components
     this.music = new MusicTheory(0, 'pentatonicMajor', 2, 4);
@@ -176,6 +187,7 @@ class SnakeSynthApp {
       selPattern: document.getElementById('selPattern'),
       selSymmetry: document.getElementById('selSymmetry'),
       selArticulation: document.getElementById('selArticulation'),
+      chkGroup: document.getElementById('chkGroup'),
       selWaveform: document.getElementById('selWaveform'),
       selArpPattern: document.getElementById('selArpPattern'),
       selAutoBehavior: document.getElementById('selAutoBehavior'),
@@ -375,6 +387,10 @@ class SnakeSynthApp {
       if (this.articulation !== 'fullLegato') {
         this.synth.releaseAllVoices(0.12);
       }
+    });
+
+    this.ui.chkGroup.addEventListener('change', (e) => {
+      this.groupMode = e.target.checked;
     });
 
     this.ui.selWaveform.addEventListener('change', (e) => {
@@ -648,6 +664,8 @@ class SnakeSynthApp {
     this.currentSymmetry = p.symmetry ?? this.currentSymmetry;
     this.patternStep = 0;
     this.articulation = p.articulation ?? this.articulation;
+    this.groupMode = p.group ?? this.groupMode;
+    this.previousVoicePitches = [null, null, null, null];
     this.snake.autoBehavior = p.autoBehavior;
 
     // Sliders
@@ -664,6 +682,7 @@ class SnakeSynthApp {
     this.ui.selPattern.value = this.currentPattern;
     this.ui.selSymmetry.value = this.currentSymmetry;
     this.ui.selArticulation.value = this.articulation;
+    this.ui.chkGroup.checked = this.groupMode;
     this.ui.selWaveform.value = p.waveform;
     this.ui.selArpPattern.value = p.arpPattern;
     this.ui.selAutoBehavior.value = p.autoBehavior;
@@ -758,21 +777,31 @@ class SnakeSynthApp {
     const normHead = this.snake.getNormalizedHead();
     const normHistory = this.snake.getNormalizedSegments();
     const activeVoiceCount = voiceCountForLength(this.snake.segments.length);
-    this.currentVoices = this.music.getVoices(normHead, normHistory, this.currentTreatment, activeVoiceCount);
+    const rawVoices = this.music.getVoices(normHead, normHistory, this.currentTreatment, activeVoiceCount);
 
-    // 4b. Apply Music Mouse pattern as scale-degree delta (Feature D — spec §5.4)
+    // 4b. Compute pre-pattern pitch diff (Feature G — spec §5.7).
+    // Group semantics key off whether the snake's geometry moved, not
+    // whether the pattern's rotating delta cycled, so the diff must
+    // compare the pre-pattern pitches.
+    const rawPitches = rawVoices.map(v => v?.note?.midi ?? null);
+    const changedMask = rawPitches.map((p, i) => p !== (this.previousVoicePitches[i] ?? null));
+
+    // 4c. Apply Music Mouse pattern as scale-degree delta (Feature D — spec §5.4)
     this.currentVoices = this.music.applyPattern(
-      this.currentVoices,
+      rawVoices,
       this.currentPattern,
       this.patternStep,
       this.currentSymmetry
     );
 
-    // 4. Trigger Synth Note(s) based on Arpeggio Pattern
-    this.triggerVoiceArpeggio(this.currentVoices);
-
-    // 4c. Advance pattern step for next tick
+    // 4d. Advance pattern step for next tick
     this.patternStep++;
+
+    // 4e. Trigger Synth Note(s) based on Group + Arpeggio Pattern + changedMask
+    this.triggerVoiceArpeggio(this.currentVoices, changedMask);
+
+    // 4f. Save pre-pattern pitches for next tick's diff.
+    this.previousVoicePitches = rawPitches;
 
     // 5. Add visual sound ripple at head position
     const cellW = this.canvas.width / (this.gridSize * (window.devicePixelRatio || 1));
@@ -819,35 +848,62 @@ class SnakeSynthApp {
     }
   }
 
-  triggerVoiceArpeggio(voices) {
-    if (!voices || voices.length === 0) return;
+  triggerVoiceArpeggio(voices, changedMask = []) {
+    if (!voices || voices.length === 0) {
+      this.lastPlayingVoiceIdxs = [];
+      return;
+    }
 
     const pattern = this.synth.arpPattern;
     const dur = 60 / this.bpm * 0.8;
+    const played = [];
+
+    // Feature G: Group mode retriggers ALL active voices on any change,
+    // emits silence otherwise. Spiegel's "Group" from MM (PDF pág 6).
+    if (this.groupMode) {
+      const anyChanged = changedMask.some(Boolean);
+      if (!anyChanged) {
+        this.lastPlayingVoiceIdxs = [];
+        return;
+      }
+      voices.forEach((v, idx) => {
+        if (!v.note) return;
+        this.synth.triggerVoiceNote(v.note.freq, idx, dur * 1.5, 0.7, this.articulation);
+        played.push(idx);
+      });
+      this.lastPlayingVoiceIdxs = played;
+      return;
+    }
 
     if (pattern === 'chord' || pattern === 'drone') {
-      // Play all 4 voices simultaneously!
+      // Pitch-change gate (spec §5.7): in group-OFF + chord/drone, each
+      // voice retriggers only when its own pitch moves.
       voices.forEach((v, idx) => {
-        if (v.note) {
-          this.synth.triggerVoiceNote(v.note.freq, idx, dur * 1.5, 0.7, this.articulation);
-        }
+        if (!v.note || !changedMask[idx]) return;
+        this.synth.triggerVoiceNote(v.note.freq, idx, dur * 1.5, 0.7, this.articulation);
+        played.push(idx);
       });
     } else if (pattern === 'upDown') {
-      // Voices cycle up and back, truncated to active voice count
+      // Voices cycle up and back, truncated to active voice count.
+      // cycle/upDown/random ignore the pitch-change gate — they drive the
+      // rhythm themselves, not the snake's movement.
       const fullOrder = [0, 1, 2, 3, 2, 1];
       const order = fullOrder.filter(i => i < voices.length);
-      if (order.length === 0) return;
-      const idx = order[this.voiceStep % order.length];
-      const v = voices[idx];
-      if (v && v.note) {
-        this.synth.triggerVoiceNote(v.note.freq, idx, dur, 0.85, this.articulation);
+      if (order.length > 0) {
+        const idx = order[this.voiceStep % order.length];
+        const v = voices[idx];
+        if (v && v.note) {
+          this.synth.triggerVoiceNote(v.note.freq, idx, dur, 0.85, this.articulation);
+          played.push(idx);
+        }
+        this.voiceStep++;
       }
-      this.voiceStep++;
     } else if (pattern === 'random') {
       const idx = Math.floor(Math.random() * voices.length);
       const v = voices[idx];
       if (v && v.note) {
         this.synth.triggerVoiceNote(v.note.freq, idx, dur, 0.85, this.articulation);
+        played.push(idx);
       }
     } else {
       // 'cycle' (0 -> 1 -> 2 -> 3)
@@ -855,9 +911,12 @@ class SnakeSynthApp {
       const v = voices[idx];
       if (v && v.note) {
         this.synth.triggerVoiceNote(v.note.freq, idx, dur, 0.85, this.articulation);
+        played.push(idx);
       }
       this.voiceStep++;
     }
+
+    this.lastPlayingVoiceIdxs = played;
   }
 
   start() {
