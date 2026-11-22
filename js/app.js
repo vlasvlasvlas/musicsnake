@@ -140,6 +140,12 @@ class SnakeSynthApp {
     this.previousVoicePitches = [null, null, null, null];
     this.lastPlayingVoiceIdxs = []; // consumed by Task 8's highlight renderer
 
+    // Snake freeze / sustain (Feature I — spec §5.9). Mouse-hold for a
+    // momentary freeze (like a sustain pedal), double-click for a latch.
+    // Honors Spiegel's "the way to keep it silent is to just not play it."
+    this.isFrozen = false;
+    this.isFrozenByHold = false;
+
     // Components
     this.music = new MusicTheory(0, 'pentatonicMajor', 2, 4);
     this.synth = new SynthEngine();
@@ -463,6 +469,9 @@ class SnakeSynthApp {
   bindCanvasInteraction() {
     // Mouse (desktop)
     const handleMouseCoord = (clientX, clientY) => {
+      // Feature I: during freeze, stop updating mouseTarget so a held
+      // sustain does not drift the snake in auto mode on next unfreeze.
+      if (this.isFrozen) return;
       const rect = this.canvas.getBoundingClientRect();
       const nx = Math.max(0, Math.min(0.999, (clientX - rect.left) / rect.width));
       const ny = Math.max(0, Math.min(0.999, (clientY - rect.top) / rect.height));
@@ -478,13 +487,69 @@ class SnakeSynthApp {
     this.canvas.addEventListener('mousemove', (e) => handleMouseCoord(e.clientX, e.clientY));
     this.canvas.addEventListener('mouseleave', () => { this.snake.mouseTarget = null; });
 
+    // Feature I: mouse-hold = momentary freeze (sustain pedal).
+    // Only engages if not already frozen (latch mode via dblclick wins).
+    this.canvas.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return; // left click only
+      if (!this.isFrozen) {
+        this.isFrozen = true;
+        this.isFrozenByHold = true;
+      }
+    });
+
+    // Release on mouseup ANYWHERE (not just canvas) so the user can drag
+    // off the canvas without getting stuck frozen.
+    window.addEventListener('mouseup', (e) => {
+      if (e.button !== 0) return;
+      if (this.isFrozenByHold) {
+        this.isFrozen = false;
+        this.isFrozenByHold = false;
+      }
+    });
+
+    // Feature I: double-click = toggle latch freeze.
+    this.canvas.addEventListener('dblclick', (e) => {
+      e.preventDefault();
+      this.isFrozen = !this.isFrozen;
+      this.isFrozenByHold = false;
+    });
+
     // Touch (mobile) — swipe angle → dirección cardinal
     let touchStart = null;
+    // Freeze-via-touch state
+    let longPressTimer = null;
+    let lastTapTs = 0;
+    let freezeByTouchHold = false;
+    const LONG_PRESS_MS = 220;
+    const DOUBLE_TAP_MS = 320;
+    const TOUCH_MOVE_THRESHOLD = 14;
 
     this.canvas.addEventListener('touchstart', (e) => {
       if (e.touches.length > 0) {
         touchStart = { x: e.touches[0].clientX, y: e.touches[0].clientY };
       }
+
+      // Feature I: double-tap = toggle latch freeze.
+      const now = Date.now();
+      if (now - lastTapTs < DOUBLE_TAP_MS) {
+        this.isFrozen = !this.isFrozen;
+        this.isFrozenByHold = false;
+        lastTapTs = 0;
+        if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+        return;
+      }
+      lastTapTs = now;
+
+      // Feature I: long-press = freeze while held.
+      if (longPressTimer) clearTimeout(longPressTimer);
+      longPressTimer = setTimeout(() => {
+        if (!this.isFrozen) {
+          this.isFrozen = true;
+          this.isFrozenByHold = true;
+          freezeByTouchHold = true;
+        }
+        longPressTimer = null;
+      }, LONG_PRESS_MS);
     }, { passive: true });
 
     this.canvas.addEventListener('touchmove', (e) => {
@@ -492,6 +557,12 @@ class SnakeSynthApp {
       const dx = e.touches[0].clientX - touchStart.x;
       const dy = e.touches[0].clientY - touchStart.y;
       const dist = Math.sqrt(dx * dx + dy * dy);
+      // Significant finger movement cancels the pending long-press
+      // (Feature I) so a swipe does not accidentally freeze.
+      if (dist > TOUCH_MOVE_THRESHOLD && longPressTimer) {
+        clearTimeout(longPressTimer);
+        longPressTimer = null;
+      }
       if (dist < 18) return; // umbral mínimo de swipe
 
       if (this.mode === 'auto') {
@@ -514,7 +585,16 @@ class SnakeSynthApp {
       }
     }, { passive: true });
 
-    this.canvas.addEventListener('touchend', () => { touchStart = null; });
+    this.canvas.addEventListener('touchend', () => {
+      touchStart = null;
+      if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+      // Release the long-press freeze on finger lift.
+      if (freezeByTouchHold) {
+        this.isFrozen = false;
+        this.isFrozenByHold = false;
+        freezeByTouchHold = false;
+      }
+    });
   }
 
   handleKeyDown(e) {
@@ -727,6 +807,13 @@ class SnakeSynthApp {
    * Called on every music tick (tempo-based clock)
    */
   tickMusicClock() {
+    // Feature I: freeze gate. While frozen, every tick step is skipped —
+    // no snake advance, no voice derivation, no retriggers, no muda
+    // evaluation (Review Focus #5). Full-legato oscillators sustain
+    // naturally; non-legato notes decay silent on their own schedules.
+    // The outer rAF loop still runs so renderer.render keeps updating.
+    if (this.isFrozen) return;
+
     // 1. Advance Snake in Auto Mode or Game Mode
     if (this.mode === 'auto') {
       this.snake.updateAutonomousSteering(this.foodManager.foods);
