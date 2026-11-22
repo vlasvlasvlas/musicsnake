@@ -18,6 +18,7 @@ export const PRESETS = {
     treatment: 'contrary',
     waveform: 'triangle',
     bpm: 110,
+    bpm2: 165,
     cutoff: 2400,
     resonance: 3.5,
     delayMix: 0.35,
@@ -32,6 +33,7 @@ export const PRESETS = {
     treatment: 'canonDelay',
     waveform: 'sine',
     bpm: 85,
+    bpm2: 42,
     cutoff: 1600,
     resonance: 2.0,
     delayMix: 0.48,
@@ -46,6 +48,7 @@ export const PRESETS = {
     treatment: 'parallel',
     waveform: 'sawtooth',
     bpm: 132,
+    bpm2: 264,
     cutoff: 2800,
     resonance: 5.5,
     delayMix: 0.42,
@@ -60,6 +63,7 @@ export const PRESETS = {
     treatment: 'mirror',
     waveform: 'triangle',
     bpm: 96,
+    bpm2: 48,
     cutoff: 3200,
     resonance: 3.0,
     delayMix: 0.38,
@@ -74,6 +78,7 @@ export const PRESETS = {
     treatment: 'cluster',
     waveform: 'square',
     bpm: 140,
+    bpm2: 280,
     cutoff: 3800,
     resonance: 7.0,
     delayMix: 0.35,
@@ -84,12 +89,22 @@ export const PRESETS = {
 };
 
 class SnakeSynthApp {
+  get bpm() {
+    return this.activeTempo === 1 ? this.bpm1 : this.bpm2;
+  }
+
   constructor() {
     this.gridSize = 28;
     this.mode = 'auto'; // 'game' or 'auto'
     this.isPlaying = false;
     this.currentTreatment = 'contrary';
-    this.bpm = 110;
+
+    // Dual tempo (Feature E — spec §5.5). Music Mouse had two tempos
+    // alternable with `\`. Only one is active at a time (no polyrhythm —
+    // that would belong to Camino 2/3).
+    this.bpm1 = 110;
+    this.bpm2 = 165;
+    this.activeTempo = 1;
 
     // Components
     this.music = new MusicTheory(0, 'pentatonicMajor', 2, 4);
@@ -141,8 +156,12 @@ class SnakeSynthApp {
       selWallMode: document.getElementById('selWallMode'),
       selPreset: document.getElementById('selPreset'),
 
-      sliderBpm: document.getElementById('sliderBpm'),
-      valBpm: document.getElementById('valBpm'),
+      sliderBpm1: document.getElementById('sliderBpm1'),
+      valBpm1: document.getElementById('valBpm1'),
+      sliderBpm2: document.getElementById('sliderBpm2'),
+      valBpm2: document.getElementById('valBpm2'),
+      btnTempo1: document.getElementById('btnTempo1'),
+      btnTempo2: document.getElementById('btnTempo2'),
       sliderCutoff: document.getElementById('sliderCutoff'),
       valCutoff: document.getElementById('valCutoff'),
       sliderRes: document.getElementById('sliderRes'),
@@ -322,10 +341,18 @@ class SnakeSynthApp {
     });
 
     // Slider Controls
-    this.ui.sliderBpm.addEventListener('input', (e) => {
-      this.bpm = parseInt(e.target.value, 10);
-      this.ui.valBpm.textContent = `${this.bpm} BPM`;
+    this.ui.sliderBpm1.addEventListener('input', (e) => {
+      this.bpm1 = parseInt(e.target.value, 10);
+      this.ui.valBpm1.textContent = `${this.bpm1} BPM`;
     });
+
+    this.ui.sliderBpm2.addEventListener('input', (e) => {
+      this.bpm2 = parseInt(e.target.value, 10);
+      this.ui.valBpm2.textContent = `${this.bpm2} BPM`;
+    });
+
+    this.ui.btnTempo1.addEventListener('click', () => this.setActiveTempo(1));
+    this.ui.btnTempo2.addEventListener('click', () => this.setActiveTempo(2));
 
     this.ui.sliderCutoff.addEventListener('input', (e) => {
       const val = parseInt(e.target.value, 10);
@@ -491,6 +518,12 @@ class SnakeSynthApp {
         this.setTreatment('canonDelay');
         break;
 
+      // Tempo toggle (\ — matches Music Mouse's Tempo Select key, PDF pág 7)
+      case '\\':
+        e.preventDefault();
+        this.setActiveTempo(this.activeTempo === 1 ? 2 : 1);
+        break;
+
       // Scale Hotkeys (1-8)
       case '1': this.setScaleByKey('pentatonicMajor'); break;
       case '2': this.setScaleByKey('pentatonicMinor'); break;
@@ -501,6 +534,13 @@ class SnakeSynthApp {
       case '7': this.setScaleByKey('wholeTone'); break;
       case '8': this.setScaleByKey('blues'); break;
     }
+  }
+
+  setActiveTempo(which) {
+    if (which !== 1 && which !== 2) return;
+    this.activeTempo = which;
+    if (this.ui.btnTempo1) this.ui.btnTempo1.classList.toggle('active', which === 1);
+    if (this.ui.btnTempo2) this.ui.btnTempo2.classList.toggle('active', which === 2);
   }
 
   setAppMode(newMode) {
@@ -545,7 +585,10 @@ class SnakeSynthApp {
     this.currentTreatment = p.treatment;
     this.synth.setWaveform(p.waveform);
     this.synth.arpPattern = p.arpPattern;
-    this.bpm = p.bpm;
+    // Review Focus #4: ?? fallback — a preset without bpm (legacy) or bpm2
+    // (not yet migrated) keeps the current value rather than becoming undefined.
+    this.bpm1 = p.bpm ?? p.bpm1 ?? this.bpm1;
+    this.bpm2 = p.bpm2 ?? this.bpm2;
     this.snake.autoBehavior = p.autoBehavior;
 
     // Sliders
@@ -563,8 +606,10 @@ class SnakeSynthApp {
     this.ui.selArpPattern.value = p.arpPattern;
     this.ui.selAutoBehavior.value = p.autoBehavior;
 
-    this.ui.sliderBpm.value = p.bpm;
-    this.ui.valBpm.textContent = `${p.bpm} BPM`;
+    this.ui.sliderBpm1.value = this.bpm1;
+    this.ui.valBpm1.textContent = `${this.bpm1} BPM`;
+    this.ui.sliderBpm2.value = this.bpm2;
+    this.ui.valBpm2.textContent = `${this.bpm2} BPM`;
     this.ui.sliderCutoff.value = p.cutoff;
     this.ui.valCutoff.textContent = `${p.cutoff} Hz`;
     this.ui.sliderRes.value = p.resonance;
