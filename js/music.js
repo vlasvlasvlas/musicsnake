@@ -63,6 +63,27 @@ export const SCALES = {
   }
 };
 
+/**
+ * The 10 Music Mouse pattern sequences (PDF pág 7, Pattern selectors 1-0).
+ * Values are scale-degree deltas applied to the XY-derived voice pitches
+ * each tick. `off` disables pattern modulation (soloes the snake geometry).
+ *
+ * Spec §5.4.
+ */
+export const MM_PATTERNS = {
+  off: { label: 'Off',                       deltas: [0] },
+  p1:  { label: '10-note cycle',             deltas: [0, 4, 5, 0, 4, 3, 4, 5, 0, 4] },
+  p2:  { label: '6-note triadic arpeggio',   deltas: [0, 2, 4, 7, 4, 2] },
+  p3:  { label: '8-note cycling scale',      deltas: [0, 1, 2, 3, 4, 3, 2, 1] },
+  p4:  { label: '14-note cycling scale',     deltas: [0, 1, 2, 3, 4, 5, 6, 7, 6, 5, 4, 3, 2, 1] },
+  p5:  { label: '8-note extended triadic',   deltas: [0, 4, 7, 11, 7, 4, 7, 4] },
+  p6:  { label: '16-note stepwise cycle',    deltas: [0, 1, 0, 1, 2, 1, 2, 3, 2, 3, 4, 3, 2, 1, 2, 1] },
+  p7:  { label: '10-note cycle B',           deltas: [0, 2, 3, 4, 5, 6, 5, 4, 3, 2] },
+  p8:  { label: '16-note irregular cycle',   deltas: [0, 7, 1, 6, 2, 5, 3, 4, 5, 2, 4, 5, 2, 6, 1, 7] },
+  p9:  { label: '8-note cycle',              deltas: [0, 1, 4, 1, 0, 4, 0, 4] },
+  p10: { label: '16-note cycle B',           deltas: [0, 7, 0, 0, 2, 1, 2, 4, 3, 2, 1, 2, 0, 0] }
+};
+
 export const TREATMENTS = {
   contrary: {
     name: 'Movimiento contrario',
@@ -160,12 +181,17 @@ export class MusicTheory {
   }
 
   /**
-   * Derive 4 polyphonic voices like Laurie Spiegel's Music Mouse
+   * Derive polyphonic voices like Laurie Spiegel's Music Mouse.
+   * Always computes 4 voices to preserve treatment math (contrary, mirror,
+   * cluster, canonDelay all reference the full set), then truncates to
+   * activeVoiceCount at return.
+   *
    * @param {Object} pos - Normalized coordinates {x, y} of the snake head
    * @param {Array} history - Previous segment normalized coordinates [{x, y}, ...]
    * @param {String} treatment - Harmonic treatment mode
+   * @param {Number} activeVoiceCount - 1..4 (default 4 preserves back-compat)
    */
-  getVoices(pos, history = [], treatment = 'contrary') {
+  getVoices(pos, history = [], treatment = 'contrary', activeVoiceCount = 4) {
     const notes = this.gridNotes;
     const len = notes.length;
     if (len === 0) return [];
@@ -247,11 +273,88 @@ export class MusicTheory {
       };
     }
 
-    return [
+    const allVoices = [
       { id: 1, name: 'Soprano (Cabeza X)', note: v1, pan: -0.65 },
       { id: 2, name: 'Alto (Cabeza Y)', note: v2, pan: 0.65 },
       { id: 3, name: 'Tenor (Cuerpo Medio)', note: v3, pan: -0.25 },
       { id: 4, name: 'Bajo/Drone (Cola)', note: bassNote, pan: 0.25 }
     ];
+
+    const n = Math.max(1, Math.min(4, activeVoiceCount | 0));
+    return allVoices.slice(0, n);
+  }
+
+  /**
+   * Apply a Music Mouse pattern as a scale-degree delta on top of
+   * geometry-derived voices (spec §5.4). The pattern cycles its deltas
+   * across patternStep; symmetry decides whether voices mirror or move
+   * parallel. 'off' is a no-op.
+   */
+  applyPattern(voices, patternKey, patternStep, symmetry = 'parallel') {
+    if (patternKey === 'off' || !MM_PATTERNS[patternKey]) return voices;
+    const deltas = MM_PATTERNS[patternKey].deltas;
+    const delta = deltas[((patternStep % deltas.length) + deltas.length) % deltas.length];
+    if (delta === 0) return voices;
+
+    const notes = this.gridNotes;
+    const len = notes.length;
+    if (len === 0) return voices;
+
+    return voices.map((v, i) => {
+      if (!v || !v.note) return v;
+      const sign = (symmetry === 'contrary' && (i === 1 || i === 3)) ? -1 : 1;
+      const signedDelta = sign * delta;
+
+      // I1 fix: the bass voice (getVoices transposes v4 to midi - 12,
+      // clamped to 24) can sit BELOW the grid's lowest note. Shift the
+      // search up in octaves until we land inside the grid so the scale-
+      // degree index is meaningful; re-apply the octave offset to the
+      // output so the bass keeps its octave-below character instead of
+      // being yanked up into the melodic register on the first non-zero
+      // pattern step.
+      let searchMidi = v.note.midi;
+      let octaveOffset = 0;
+      const gridLow = notes[0].midi;
+      const gridHigh = notes[len - 1].midi;
+      while (searchMidi < gridLow && octaveOffset > -48) {
+        searchMidi += 12;
+        octaveOffset -= 12;
+      }
+      while (searchMidi > gridHigh && octaveOffset < 48) {
+        searchMidi -= 12;
+        octaveOffset += 12;
+      }
+
+      let baseIdx = notes.findIndex(n => n.midi === searchMidi);
+      if (baseIdx < 0) {
+        // Not a grid note even after octave normalization — fall back to
+        // nearest-midi inside the grid. The bass case above should catch
+        // most real inputs; this handles arbitrary callers.
+        baseIdx = 0;
+        let bestDist = Math.abs(notes[0].midi - searchMidi);
+        for (let k = 1; k < len; k++) {
+          const d = Math.abs(notes[k].midi - searchMidi);
+          if (d < bestDist) { bestDist = d; baseIdx = k; }
+        }
+      }
+
+      const newIdx = ((baseIdx + signedDelta) % len + len) % len;
+      const gridNote = notes[newIdx];
+      const finalMidi = gridNote.midi + octaveOffset;
+
+      if (octaveOffset === 0) {
+        return { ...v, note: gridNote };
+      }
+      return {
+        ...v,
+        note: {
+          midi: finalMidi,
+          freq: this.midiToFreq(finalMidi),
+          name: this.midiToName(finalMidi),
+          octave: Math.floor(finalMidi / 12) - 1,
+          degree: gridNote.degree
+        }
+      };
+    });
   }
 }

@@ -45,6 +45,22 @@ export class SynthEngine {
 
     // Active continuous voices for Drone mode
     this.droneNodes = [];
+
+    // Per-voice active oscillators for retriggerable articulation modes
+    // (Feature F — spec §5.6). Each slot: { osc, subOsc, voiceGain, midiNote } | null
+    this.activeVoiceNodes = [null, null, null, null];
+
+    // Food orb sound bank + global volume for the pickup timbres.
+    this.foodBank = 'analog';   // 'analog' | 'arcade' | 'fm'
+    this.foodVolume = 0.5;      // 0..1 multiplier applied to peakVol per hit
+  }
+
+  setFoodBank(bank) {
+    if (['analog', 'arcade', 'fm'].includes(bank)) this.foodBank = bank;
+  }
+
+  setFoodVolume(v) {
+    this.foodVolume = Math.max(0, Math.min(1, v));
   }
 
   async init() {
@@ -178,6 +194,13 @@ export class SynthEngine {
         0.05
       );
     }
+    // I3 fix: muting while a fullLegato voice is active leaves the
+    // oscillator running silenced (up to the 60 s safety stop) and,
+    // worse, never sends a MIDI Note Off to external synths. Flush the
+    // lifecycle on mute so external gear and internal state both reset.
+    if (mute) {
+      this.releaseAllVoices(0.12);
+    }
   }
 
   setMasterVolume(val) {
@@ -217,11 +240,38 @@ export class SynthEngine {
   }
 
   /**
-   * Plays a single note for a specific voice
+   * Plays a single note for a specific voice. Articulation decides whether
+   * the oscillator fades out on a scheduled stop (staccato / halfLegato) or
+   * sustains until the next retrigger (fullLegato).
+   *
+   * @param {number} freq - Hz
+   * @param {number} voiceIndex - 0..3
+   * @param {number} duration - base duration seconds (caller's beat quantum)
+   * @param {number} velocity - 0..1
+   * @param {string} articulation - 'staccato' | 'halfLegato' | 'fullLegato'
    */
-  triggerVoiceNote(freq, voiceIndex, duration = 0.3, velocity = 0.8) {
+  triggerVoiceNote(freq, voiceIndex, duration = 0.3, velocity = 0.8, articulation = 'halfLegato') {
     if (!this.ctx || this.isMuted || !freq || freq <= 0) return;
     const now = this.ctx.currentTime;
+
+    // Full-legato: release any prior oscillator on this voice first so the
+    // new pitch takes over instead of stacking (Review Focus #2).
+    if (articulation === 'fullLegato' && this.activeVoiceNodes[voiceIndex]) {
+      this.releaseVoice(voiceIndex, 0.08);
+    }
+
+    // Articulation → effective sustain length.
+    // staccato: shortened to a tiny click
+    // halfLegato: as the caller supplied (preserves prior behavior)
+    // fullLegato: effectively infinite, we schedule a far-future stop as safety
+    let sustainLen;
+    if (articulation === 'staccato') {
+      sustainLen = Math.min(0.2, duration * 0.35);
+    } else if (articulation === 'fullLegato') {
+      sustainLen = 60; // 60 seconds; a retrigger or releaseVoice will truncate
+    } else {
+      sustainLen = duration;
+    }
 
     // Polyphonic Stereo Panning
     const panNode = this.ctx.createStereoPanner ? this.ctx.createStereoPanner() : null;
@@ -235,7 +285,6 @@ export class SynthEngine {
     osc.type = this.waveform;
     osc.frequency.setValueAtTime(freq, now);
 
-    // Warm sub/chorus oscillator
     const subOsc = this.ctx.createOscillator();
     subOsc.type = 'sine';
     subOsc.frequency.setValueAtTime(freq * 0.5, now); // 1 octave lower sub
@@ -244,17 +293,20 @@ export class SynthEngine {
     const env = this.envelope;
     const peakGain = (velocity * 0.22);
 
-    // ADSR Envelope
+    // ADSR Envelope — sustain plateau for fullLegato is just the sustain
+    // level held at sustainLen (no ramp to 0 until releaseVoice fires).
     voiceGain.gain.setValueAtTime(0.0001, now);
     voiceGain.gain.exponentialRampToValueAtTime(peakGain, now + env.attack);
     voiceGain.gain.exponentialRampToValueAtTime(
       Math.max(0.0001, peakGain * env.sustain),
       now + env.attack + env.decay
     );
-    voiceGain.gain.exponentialRampToValueAtTime(
-      0.0001,
-      now + duration + env.release
-    );
+    if (articulation !== 'fullLegato') {
+      voiceGain.gain.exponentialRampToValueAtTime(
+        0.0001,
+        now + sustainLen + env.release
+      );
+    }
 
     // Sub-osc mix
     const subGain = this.ctx.createGain();
@@ -273,53 +325,156 @@ export class SynthEngine {
 
     osc.start(now);
     subOsc.start(now);
-    const stopTime = now + duration + env.release + 0.1;
+    const stopTime = now + sustainLen + env.release + 0.1;
     osc.stop(stopTime);
     subOsc.stop(stopTime);
 
-    // Send MIDI if output is available
+    // Track the active slot so releaseVoice / releaseAllVoices can reach it.
+    const midiNote = Math.round(69 + 12 * Math.log2(freq / 440));
+    this.activeVoiceNodes[voiceIndex] = { osc, subOsc, voiceGain, midiNote, articulation };
+
+    // Non-legato slots self-clear after their scheduled stop so later
+    // retriggers don't try to release a dead osc.
+    if (articulation !== 'fullLegato') {
+      const nullAfterMs = (sustainLen + env.release + 0.12) * 1000;
+      setTimeout(() => {
+        if (this.activeVoiceNodes[voiceIndex]?.osc === osc) {
+          this.activeVoiceNodes[voiceIndex] = null;
+        }
+      }, nullAfterMs);
+    }
+
+    // MIDI output lifecycle (Review Focus #3):
+    //   staccato / halfLegato → paired Note Off via setTimeout as before
+    //   fullLegato → Note On now, Note Off deferred to releaseVoice
     if (this.midiEnabled && this.midiOutput) {
-      const midiNote = Math.round(69 + 12 * Math.log2(freq / 440));
-      this.sendMidiNote(midiNote, Math.floor(velocity * 127), duration);
+      if (articulation === 'fullLegato') {
+        this.midiOutput.send([0x90, midiNote, Math.floor(velocity * 127)]);
+      } else {
+        this.sendMidiNote(midiNote, Math.floor(velocity * 127), sustainLen);
+      }
     }
   }
 
   /**
-   * Sound effect triggered when the snake eats an orb / food
+   * Release a specific active voice. Sends MIDI Note Off, fades voiceGain
+   * over releaseSec, and schedules osc.stop. Safe to call on an empty slot.
+   */
+  releaseVoice(voiceIndex, releaseSec = 0.15) {
+    const slot = this.activeVoiceNodes[voiceIndex];
+    if (!slot || !this.ctx) return;
+    const now = this.ctx.currentTime;
+    const { osc, subOsc, voiceGain, midiNote } = slot;
+
+    try {
+      voiceGain.gain.cancelScheduledValues(now);
+      voiceGain.gain.setValueAtTime(Math.max(0.0001, voiceGain.gain.value), now);
+      voiceGain.gain.exponentialRampToValueAtTime(0.0001, now + releaseSec);
+    } catch (_) { /* node may be disconnected */ }
+
+    try { osc.stop(now + releaseSec + 0.02); } catch (_) { /* already stopped */ }
+    try { subOsc.stop(now + releaseSec + 0.02); } catch (_) {}
+
+    if (this.midiEnabled && this.midiOutput && typeof midiNote === 'number') {
+      try { this.midiOutput.send([0x80, midiNote, 0]); } catch (_) {}
+    }
+
+    this.activeVoiceNodes[voiceIndex] = null;
+  }
+
+  /**
+   * Release every active voice. Used on scale/root change (Review Focus #2)
+   * and on muda-de-piel repli­egue (spec §5.3 updated for Feature F).
+   */
+  releaseAllVoices(releaseSec = 0.15) {
+    for (let i = 0; i < this.activeVoiceNodes.length; i++) {
+      this.releaseVoice(i, releaseSec);
+    }
+  }
+
+  /**
+   * One-shot timbre fired when the snake eats an orb. Dispatches to one
+   * of the three sound banks (analog / arcade / fm). Each orb type has
+   * a distinct voice within each bank so the ear can read what was
+   * just picked up.
    */
   triggerFoodSound(foodType = 'scale') {
     if (!this.ctx || this.isMuted) return;
+    switch (this.foodBank) {
+      case 'arcade': return this._foodArcade(foodType);
+      case 'fm':     return this._foodFM(foodType);
+      case 'analog':
+      default:       return this._foodAnalog(foodType);
+    }
+  }
+
+  /**
+   * Analog classic-synth bank: a single consistent pluck voice. Every
+   * orb triggers the same timbre so the player hears "ate one" without
+   * the sound varying per food type.
+   */
+  _foodAnalog(_foodType) {
     const now = this.ctx.currentTime;
 
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    const gain = this.ctx.createGain();
+
+    // Juno-style pluck: saw + sub-sine, filter closes over the decay.
+    const osc = this.ctx.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(329.63, now); // E4
+
+    const sub = this.ctx.createOscillator();
+    sub.type = 'sine';
+    sub.frequency.setValueAtTime(164.81, now); // E3 sub
+
+    filter.frequency.setValueAtTime(2800, now);
+    filter.frequency.exponentialRampToValueAtTime(400, now + 0.45);
+    filter.Q.setValueAtTime(4, now);
+
+    const duration = 0.55;
+    const peakVol = 0.22;
+    const vol = Math.max(0.0001, peakVol * this.foodVolume);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(vol, now + 0.015);
+    gain.gain.exponentialRampToValueAtTime(vol * 0.5, now + 0.08);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+
+    // Sub mix into the filter alongside the main saw.
+    const subMix = this.ctx.createGain();
+    subMix.gain.setValueAtTime(0.45, now);
+    sub.connect(subMix);
+    subMix.connect(filter);
+    osc.connect(filter);
+
+    filter.connect(gain);
+    gain.connect(this.delayIn);
+    gain.connect(this.reverbIn);
+    gain.connect(this.limiter);
+
+    const stopAt = now + duration + 0.1;
+    osc.start(now);
+    sub.start(now);
+    osc.stop(stopAt);
+    sub.stop(stopAt);
+  }
+
+  /**
+   * Arcade bank: Nokia / 8-bit snap. One sine osc with a quick upward
+   * pitch sweep. Same sound every orb.
+   */
+  _foodArcade(_foodType) {
+    const now = this.ctx.currentTime;
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
 
-    switch (foodType) {
-      case 'chord':
-        osc.type = 'triangle';
-        osc.frequency.setValueAtTime(523.25, now); // C5
-        osc.frequency.exponentialRampToValueAtTime(1046.5, now + 0.2); // C6
-        break;
-      case 'tempo':
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(880, now);
-        osc.frequency.exponentialRampToValueAtTime(1760, now + 0.15);
-        break;
-      case 'filter':
-        osc.type = 'sawtooth';
-        osc.frequency.setValueAtTime(300, now);
-        osc.frequency.exponentialRampToValueAtTime(900, now + 0.25);
-        break;
-      case 'reverb':
-      case 'scale':
-      default:
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(440, now);
-        osc.frequency.exponentialRampToValueAtTime(880, now + 0.18);
-        break;
-    }
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(440, now);
+    osc.frequency.exponentialRampToValueAtTime(880, now + 0.18);
 
-    gain.gain.setValueAtTime(0.25, now);
+    const vol = Math.max(0.0001, 0.25 * this.foodVolume);
+    gain.gain.setValueAtTime(vol, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
 
     osc.connect(gain);
@@ -328,7 +483,56 @@ export class SynthEngine {
     gain.connect(this.limiter);
 
     osc.start(now);
-    osc.stop(now + 0.35);
+    osc.stop(now + 0.4);
+  }
+
+  /**
+   * FM bank: classic 2-operator frequency modulation (DX7 vocabulary).
+   * Carrier + modulator sine oscs, modulator's output drives the
+   * carrier's frequency AudioParam via a gain node (modulation index).
+   * Metallic, bell-like, glassy. Same bell every orb.
+   */
+  _foodFM(_foodType) {
+    const now = this.ctx.currentTime;
+
+    const carrier = this.ctx.createOscillator();
+    carrier.type = 'sine';
+    const modulator = this.ctx.createOscillator();
+    modulator.type = 'sine';
+    const modGain = this.ctx.createGain(); // modulation index (Hz deviation)
+    const gain = this.ctx.createGain();
+
+    // Bright bell on E4.
+    const f = 329.63;
+    const duration = 0.7;
+    const peakVol = 0.2;
+    carrier.frequency.setValueAtTime(f, now);
+    modulator.frequency.setValueAtTime(f * 1.5, now);
+
+    // Modulation index envelope (controls brightness over time).
+    modGain.gain.setValueAtTime(500, now);
+    modGain.gain.exponentialRampToValueAtTime(30, now + duration);
+
+    // FM routing: modulator -> gain -> carrier.frequency
+    modulator.connect(modGain);
+    modGain.connect(carrier.frequency);
+
+    // Amplitude envelope on carrier.
+    const vol = Math.max(0.0001, peakVol * this.foodVolume);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(vol, now + 0.012);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+
+    carrier.connect(gain);
+    gain.connect(this.delayIn);
+    gain.connect(this.reverbIn);
+    gain.connect(this.limiter);
+
+    const stopAt = now + duration + 0.12;
+    carrier.start(now);
+    modulator.start(now);
+    carrier.stop(stopAt);
+    modulator.stop(stopAt);
   }
 
   /**
