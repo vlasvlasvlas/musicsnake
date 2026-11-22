@@ -8,7 +8,7 @@ import { SynthEngine } from './audio.js';
 import { Snake } from './snake.js';
 import { FoodManager } from './foods.js';
 import { Renderer } from './renderer.js';
-import { voiceCountForLength } from './growth.js';
+import { voiceCountForLength, computeTimbreByLength } from './growth.js';
 
 export const PRESETS = {
   spiegel1986: {
@@ -627,10 +627,15 @@ class SnakeSynthApp {
       this.handleFoodConsumed(consumed);
     }
 
-    // 3. Option D Timbral Modulation: Snake length opens filter & space
+    // 3. Timbral modulation by length (Feature H — spec §5.8)
     const baseCutoff = parseInt(this.ui.sliderCutoff.value, 10);
-    const lengthRatio = Math.min(2.0, 1 + (this.snake.segments.length - 4) * 0.035);
-    this.synth.setFilterCutoff(Math.min(9500, baseCutoff * lengthRatio));
+    const baseReverb = parseFloat(this.ui.sliderReverb.value);
+    const baseDelayFb = parseFloat(this.ui.sliderDelay.value);
+    const timbre = computeTimbreByLength(this.snake.segments.length, baseCutoff, baseReverb, baseDelayFb);
+    this.synth.setFilterCutoff(timbre.cutoff);
+    this.synth.setReverbMix(timbre.reverb);
+    // delay time stays at user-set 0.35 (per spec §5.8 — only feedback modulates by length)
+    this.synth.setDelayParams(0.35, timbre.delay, timbre.delay * 0.7);
 
     // 4. Derive Laurie Spiegel Voices from Snake Geometry (growth-gated — Feature A)
     const normHead = this.snake.getNormalizedHead();
