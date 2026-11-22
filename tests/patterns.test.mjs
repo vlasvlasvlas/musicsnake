@@ -97,3 +97,38 @@ test('applyPattern leaves non-active voices untouched (handles length < 4)', () 
   assert.equal(result[0].note.midi, music.gridNotes[10 + 4].midi);
   assert.equal(result[1].note.midi, music.gridNotes[10 - 4].midi);
 });
+
+// Review finding I1: when the bass voice sits BELOW the grid's lowest
+// note (getVoices clamps bassMidi to a minimum of 24, which falls below
+// gridNotes[0].midi=36 for pentatonicMajor/C/baseOctave=2), applyPattern
+// must still preserve the "one octave below" relationship through the
+// delta shift. Current code's closest-midi fallback drags the bass UP
+// to gridNotes[0] and loses the octave, popping the bass into the grid
+// register on the first non-zero pattern step.
+test('I1 fix: bass voice below the grid preserves octave-below after a non-zero pattern delta', () => {
+  const music = new MusicTheory(0, 'pentatonicMajor', 2, 4);
+  // Head at gridNotes[0] (midi 36, C2) — the lowest grid note.
+  // Bass is then clamped to midi 24 (C1), which is BELOW gridNotes[0].
+  const headIdx = 0;
+  const headNote = music.gridNotes[headIdx];
+  const bassMidi = Math.max(24, headNote.midi - 12); // = 24
+  const voices = [
+    { id: 1, name: 'Soprano', note: headNote, pan: -0.65 },
+    { id: 2, name: 'Alto',    note: headNote, pan: 0.65 },
+    { id: 3, name: 'Tenor',   note: headNote, pan: -0.25 },
+    { id: 4, name: 'Bajo',    note: { midi: bassMidi, freq: music.midiToFreq(bassMidi), name: music.midiToName(bassMidi), octave: 1, degree: 0 }, pan: 0.25 }
+  ];
+
+  // p1[1] = 4 (non-zero delta, parallel). Expected: head → gridNotes[4]
+  // (midi 45, F#2); bass → one octave below that = midi 33 (F#1).
+  const result = music.applyPattern(voices, 'p1', 1, 'parallel');
+  const expectedHeadMidi = music.gridNotes[headIdx + 4].midi; // 45
+  const expectedBassMidi = expectedHeadMidi - 12;             // 33
+
+  assert.equal(result[0].note.midi, expectedHeadMidi, 'soprano should move to gridNotes[4]');
+  assert.equal(
+    result[3].note.midi,
+    expectedBassMidi,
+    `bass must stay one octave below the shifted note (got midi ${result[3].note.midi}, expected ${expectedBassMidi}) — I1 regression guard`
+  );
+});

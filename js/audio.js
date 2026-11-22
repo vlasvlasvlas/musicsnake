@@ -182,6 +182,13 @@ export class SynthEngine {
         0.05
       );
     }
+    // I3 fix: muting while a fullLegato voice is active leaves the
+    // oscillator running silenced (up to the 60 s safety stop) and,
+    // worse, never sends a MIDI Note Off to external synths. Flush the
+    // lifecycle on mute so external gear and internal state both reset.
+    if (mute) {
+      this.releaseAllVoices(0.12);
+    }
   }
 
   setMasterVolume(val) {

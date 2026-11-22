@@ -304,20 +304,57 @@ export class MusicTheory {
       if (!v || !v.note) return v;
       const sign = (symmetry === 'contrary' && (i === 1 || i === 3)) ? -1 : 1;
       const signedDelta = sign * delta;
-      // Find the voice's current index inside gridNotes by midi match.
-      let baseIdx = notes.findIndex(n => n.midi === v.note.midi);
+
+      // I1 fix: the bass voice (getVoices transposes v4 to midi - 12,
+      // clamped to 24) can sit BELOW the grid's lowest note. Shift the
+      // search up in octaves until we land inside the grid so the scale-
+      // degree index is meaningful; re-apply the octave offset to the
+      // output so the bass keeps its octave-below character instead of
+      // being yanked up into the melodic register on the first non-zero
+      // pattern step.
+      let searchMidi = v.note.midi;
+      let octaveOffset = 0;
+      const gridLow = notes[0].midi;
+      const gridHigh = notes[len - 1].midi;
+      while (searchMidi < gridLow && octaveOffset > -48) {
+        searchMidi += 12;
+        octaveOffset -= 12;
+      }
+      while (searchMidi > gridHigh && octaveOffset < 48) {
+        searchMidi -= 12;
+        octaveOffset += 12;
+      }
+
+      let baseIdx = notes.findIndex(n => n.midi === searchMidi);
       if (baseIdx < 0) {
-        // Bass voice sits one octave below the grid (see getVoices); find
-        // the closest grid note by proximity rather than giving up.
+        // Not a grid note even after octave normalization — fall back to
+        // nearest-midi inside the grid. The bass case above should catch
+        // most real inputs; this handles arbitrary callers.
         baseIdx = 0;
-        let bestDist = Math.abs(notes[0].midi - v.note.midi);
+        let bestDist = Math.abs(notes[0].midi - searchMidi);
         for (let k = 1; k < len; k++) {
-          const d = Math.abs(notes[k].midi - v.note.midi);
+          const d = Math.abs(notes[k].midi - searchMidi);
           if (d < bestDist) { bestDist = d; baseIdx = k; }
         }
       }
+
       const newIdx = ((baseIdx + signedDelta) % len + len) % len;
-      return { ...v, note: notes[newIdx] };
+      const gridNote = notes[newIdx];
+      const finalMidi = gridNote.midi + octaveOffset;
+
+      if (octaveOffset === 0) {
+        return { ...v, note: gridNote };
+      }
+      return {
+        ...v,
+        note: {
+          midi: finalMidi,
+          freq: this.midiToFreq(finalMidi),
+          name: this.midiToName(finalMidi),
+          octave: Math.floor(finalMidi / 12) - 1,
+          degree: gridNote.degree
+        }
+      };
     });
   }
 }

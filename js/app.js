@@ -271,9 +271,17 @@ class SnakeSynthApp {
     if (this.ui.btnPlayPause) {
       this.ui.btnPlayPause.addEventListener('click', async () => {
         await this.synth.init();
+        const wasPlaying = this.isPlaying;
         this.isPlaying = !this.isPlaying;
         this.ui.btnPlayPause.textContent = this.isPlaying ? '⏸ PAUSE' : '▶ PLAY';
         this.ui.btnPlayPause.classList.toggle('active', this.isPlaying);
+        // I3 fix: stopping playback must release live fullLegato voices,
+        // otherwise their oscillators keep running silenced (up to the
+        // 60 s safety stop) and any external MIDI Note Off never fires
+        // because no tick comes to retrigger the slot.
+        if (wasPlaying && !this.isPlaying) {
+          this.synth.releaseAllVoices(0.12);
+        }
       });
     }
 
@@ -338,13 +346,18 @@ class SnakeSynthApp {
         this.snake.reset();
         this.foodManager.setGridSize(n, n);
         this.foodManager.spawnInitialFoods();
-        // Review Focus #1: reset per-tick accumulators so no stale state
-        // leaks across grid changes. Forward-declared slots (patternStep,
-        // previousVoicePitches) are set by Tasks 5 and 7; nulling them
-        // here keeps the reset complete once they exist.
+        // Review Focus #1 (I2 fix): a full reset flushes every piece of
+        // per-tick state carried from the prior grid. activeVoiceNodes
+        // and the freeze flag were the two missed slots in the original
+        // implementation; without them a latch-frozen user would stay
+        // silently frozen on the new grid, and a lingering fullLegato
+        // voice would keep its scheduled stop pending.
         this.voiceStep = 0;
         this.patternStep = 0;
         this.previousVoicePitches = [null, null, null, null];
+        this.synth.releaseAllVoices(0.12);
+        this.isFrozen = false;
+        this.isFrozenByHold = false;
       });
     }
 
