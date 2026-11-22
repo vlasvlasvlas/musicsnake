@@ -49,6 +49,18 @@ export class SynthEngine {
     // Per-voice active oscillators for retriggerable articulation modes
     // (Feature F — spec §5.6). Each slot: { osc, subOsc, voiceGain, midiNote } | null
     this.activeVoiceNodes = [null, null, null, null];
+
+    // Food orb sound bank + global volume for the pickup timbres.
+    this.foodBank = 'analog';   // 'analog' | 'arcade' | 'fm'
+    this.foodVolume = 0.5;      // 0..1 multiplier applied to peakVol per hit
+  }
+
+  setFoodBank(bank) {
+    if (['analog', 'arcade', 'fm'].includes(bank)) this.foodBank = bank;
+  }
+
+  setFoodVolume(v) {
+    this.foodVolume = Math.max(0, Math.min(1, v));
   }
 
   async init() {
@@ -381,41 +393,88 @@ export class SynthEngine {
   }
 
   /**
-   * Sound effect triggered when the snake eats an orb / food
+   * One-shot timbre fired when the snake eats an orb. Dispatches to one
+   * of the three sound banks (analog / arcade / fm). Each orb type has
+   * a distinct voice within each bank so the ear can read what was
+   * just picked up.
    */
   triggerFoodSound(foodType = 'scale') {
     if (!this.ctx || this.isMuted) return;
+    switch (this.foodBank) {
+      case 'arcade': return this._foodArcade(foodType);
+      case 'fm':     return this._foodFM(foodType);
+      case 'analog':
+      default:       return this._foodAnalog(foodType);
+    }
+  }
+
+  /**
+   * Analog classic-synth bank: a single consistent pluck voice. Every
+   * orb triggers the same timbre so the player hears "ate one" without
+   * the sound varying per food type.
+   */
+  _foodAnalog(_foodType) {
     const now = this.ctx.currentTime;
 
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    const gain = this.ctx.createGain();
+
+    // Juno-style pluck: saw + sub-sine, filter closes over the decay.
+    const osc = this.ctx.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(329.63, now); // E4
+
+    const sub = this.ctx.createOscillator();
+    sub.type = 'sine';
+    sub.frequency.setValueAtTime(164.81, now); // E3 sub
+
+    filter.frequency.setValueAtTime(2800, now);
+    filter.frequency.exponentialRampToValueAtTime(400, now + 0.45);
+    filter.Q.setValueAtTime(4, now);
+
+    const duration = 0.55;
+    const peakVol = 0.22;
+    const vol = Math.max(0.0001, peakVol * this.foodVolume);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(vol, now + 0.015);
+    gain.gain.exponentialRampToValueAtTime(vol * 0.5, now + 0.08);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+
+    // Sub mix into the filter alongside the main saw.
+    const subMix = this.ctx.createGain();
+    subMix.gain.setValueAtTime(0.45, now);
+    sub.connect(subMix);
+    subMix.connect(filter);
+    osc.connect(filter);
+
+    filter.connect(gain);
+    gain.connect(this.delayIn);
+    gain.connect(this.reverbIn);
+    gain.connect(this.limiter);
+
+    const stopAt = now + duration + 0.1;
+    osc.start(now);
+    sub.start(now);
+    osc.stop(stopAt);
+    sub.stop(stopAt);
+  }
+
+  /**
+   * Arcade bank: Nokia / 8-bit snap. One sine osc with a quick upward
+   * pitch sweep. Same sound every orb.
+   */
+  _foodArcade(_foodType) {
+    const now = this.ctx.currentTime;
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
 
-    switch (foodType) {
-      case 'chord':
-        osc.type = 'triangle';
-        osc.frequency.setValueAtTime(523.25, now); // C5
-        osc.frequency.exponentialRampToValueAtTime(1046.5, now + 0.2); // C6
-        break;
-      case 'tempo':
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(880, now);
-        osc.frequency.exponentialRampToValueAtTime(1760, now + 0.15);
-        break;
-      case 'filter':
-        osc.type = 'sawtooth';
-        osc.frequency.setValueAtTime(300, now);
-        osc.frequency.exponentialRampToValueAtTime(900, now + 0.25);
-        break;
-      case 'reverb':
-      case 'scale':
-      default:
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(440, now);
-        osc.frequency.exponentialRampToValueAtTime(880, now + 0.18);
-        break;
-    }
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(440, now);
+    osc.frequency.exponentialRampToValueAtTime(880, now + 0.18);
 
-    gain.gain.setValueAtTime(0.25, now);
+    const vol = Math.max(0.0001, 0.25 * this.foodVolume);
+    gain.gain.setValueAtTime(vol, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
 
     osc.connect(gain);
@@ -424,7 +483,56 @@ export class SynthEngine {
     gain.connect(this.limiter);
 
     osc.start(now);
-    osc.stop(now + 0.35);
+    osc.stop(now + 0.4);
+  }
+
+  /**
+   * FM bank: classic 2-operator frequency modulation (DX7 vocabulary).
+   * Carrier + modulator sine oscs, modulator's output drives the
+   * carrier's frequency AudioParam via a gain node (modulation index).
+   * Metallic, bell-like, glassy. Same bell every orb.
+   */
+  _foodFM(_foodType) {
+    const now = this.ctx.currentTime;
+
+    const carrier = this.ctx.createOscillator();
+    carrier.type = 'sine';
+    const modulator = this.ctx.createOscillator();
+    modulator.type = 'sine';
+    const modGain = this.ctx.createGain(); // modulation index (Hz deviation)
+    const gain = this.ctx.createGain();
+
+    // Bright bell on E4.
+    const f = 329.63;
+    const duration = 0.7;
+    const peakVol = 0.2;
+    carrier.frequency.setValueAtTime(f, now);
+    modulator.frequency.setValueAtTime(f * 1.5, now);
+
+    // Modulation index envelope (controls brightness over time).
+    modGain.gain.setValueAtTime(500, now);
+    modGain.gain.exponentialRampToValueAtTime(30, now + duration);
+
+    // FM routing: modulator -> gain -> carrier.frequency
+    modulator.connect(modGain);
+    modGain.connect(carrier.frequency);
+
+    // Amplitude envelope on carrier.
+    const vol = Math.max(0.0001, peakVol * this.foodVolume);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(vol, now + 0.012);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+
+    carrier.connect(gain);
+    gain.connect(this.delayIn);
+    gain.connect(this.reverbIn);
+    gain.connect(this.limiter);
+
+    const stopAt = now + duration + 0.12;
+    carrier.start(now);
+    modulator.start(now);
+    carrier.stop(stopAt);
+    modulator.stop(stopAt);
   }
 
   /**

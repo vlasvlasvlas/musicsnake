@@ -130,6 +130,20 @@
       </div>
 
       <div class="set-row">
+        <label>Sonido orbes</label>
+        <select id="selFoodBank">
+          <option value="analog" selected>Sinte analógico</option>
+          <option value="arcade">Arcade</option>
+          <option value="fm">FM / campanas</option>
+        </select>
+      </div>
+
+      <div class="set-row">
+        <label>Volumen orbes <span id="valFoodVol" class="val">50%</span></label>
+        <input type="range" id="sliderFoodVol" min="0" max="1" step="0.05" value="0.5">
+      </div>
+
+      <div class="set-row">
         <label>Orden de voces</label>
         <select id="selArpPattern">
           <option value="cycle">Secuencial 1-2-3-4</option>
@@ -171,10 +185,7 @@
 
       <div class="set-row">
         <label>Tempo activo</label>
-        <div class="btn-pair">
-          <button id="btnTempo1" class="set-btn active">T1</button>
-          <button id="btnTempo2" class="set-btn">T2</button>
-        </div>
+        <button id="btnTempoToggle" class="set-btn full">Tempo 1 (Tab)</button>
       </div>
 
       <div class="set-row">

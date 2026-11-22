@@ -194,6 +194,9 @@ class SnakeSynthApp {
       selSymmetry: document.getElementById('selSymmetry'),
       selArticulation: document.getElementById('selArticulation'),
       chkGroup: document.getElementById('chkGroup'),
+      selFoodBank: document.getElementById('selFoodBank'),
+      sliderFoodVol: document.getElementById('sliderFoodVol'),
+      valFoodVol: document.getElementById('valFoodVol'),
       selWaveform: document.getElementById('selWaveform'),
       selArpPattern: document.getElementById('selArpPattern'),
       selAutoBehavior: document.getElementById('selAutoBehavior'),
@@ -204,8 +207,7 @@ class SnakeSynthApp {
       valBpm1: document.getElementById('valBpm1'),
       sliderBpm2: document.getElementById('sliderBpm2'),
       valBpm2: document.getElementById('valBpm2'),
-      btnTempo1: document.getElementById('btnTempo1'),
-      btnTempo2: document.getElementById('btnTempo2'),
+      btnTempoToggle: document.getElementById('btnTempoToggle'),
       sliderCutoff: document.getElementById('sliderCutoff'),
       valCutoff: document.getElementById('valCutoff'),
       sliderRes: document.getElementById('sliderRes'),
@@ -412,6 +414,16 @@ class SnakeSynthApp {
       this.groupMode = e.target.checked;
     });
 
+    this.ui.selFoodBank.addEventListener('change', (e) => {
+      this.synth.setFoodBank(e.target.value);
+    });
+
+    this.ui.sliderFoodVol.addEventListener('input', (e) => {
+      const v = parseFloat(e.target.value);
+      this.synth.setFoodVolume(v);
+      this.ui.valFoodVol.textContent = `${Math.round(v * 100)}%`;
+    });
+
     this.ui.selWaveform.addEventListener('change', (e) => {
       this.synth.setWaveform(e.target.value);
     });
@@ -440,8 +452,9 @@ class SnakeSynthApp {
       this.ui.valBpm2.textContent = `${this.bpm2} BPM`;
     });
 
-    this.ui.btnTempo1.addEventListener('click', () => this.setActiveTempo(1));
-    this.ui.btnTempo2.addEventListener('click', () => this.setActiveTempo(2));
+    this.ui.btnTempoToggle.addEventListener('click', () => {
+      this.setActiveTempo(this.activeTempo === 1 ? 2 : 1);
+    });
 
     this.ui.sliderCutoff.addEventListener('input', (e) => {
       const val = parseInt(e.target.value, 10);
@@ -647,10 +660,10 @@ class SnakeSynthApp {
         this.ui.btnPlayPause.click();
         break;
 
-      // Mode Switch
+      // Tempo toggle — Tab swaps between BPM 1 and BPM 2 live.
       case 'Tab':
         e.preventDefault();
-        this.setAppMode(this.mode === 'auto' ? 'game' : 'auto');
+        this.setActiveTempo(this.activeTempo === 1 ? 2 : 1);
         break;
 
       // Mute Toggle
@@ -681,12 +694,6 @@ class SnakeSynthApp {
         this.setTreatment('canonDelay');
         break;
 
-      // Tempo toggle (\ — matches Music Mouse's Tempo Select key, PDF pág 7)
-      case '\\':
-        e.preventDefault();
-        this.setActiveTempo(this.activeTempo === 1 ? 2 : 1);
-        break;
-
       // Scale Hotkeys (1-8)
       case '1': this.setScaleByKey('pentatonicMajor'); break;
       case '2': this.setScaleByKey('pentatonicMinor'); break;
@@ -702,8 +709,9 @@ class SnakeSynthApp {
   setActiveTempo(which) {
     if (which !== 1 && which !== 2) return;
     this.activeTempo = which;
-    if (this.ui.btnTempo1) this.ui.btnTempo1.classList.toggle('active', which === 1);
-    if (this.ui.btnTempo2) this.ui.btnTempo2.classList.toggle('active', which === 2);
+    if (this.ui.btnTempoToggle) {
+      this.ui.btnTempoToggle.textContent = `Tempo ${which} (Tab)`;
+    }
   }
 
   setAppMode(newMode) {

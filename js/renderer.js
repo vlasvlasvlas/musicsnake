@@ -7,10 +7,11 @@
 const LCD_BOARD = '#aacc66';
 const LCD_INK   = 'rgba(0,0,0,0.75)';
 const LCD_MID   = 'rgba(0,0,0,0.4)';
-// Feature B: a lighter green in the same LCD hue family for voice
-// column/row highlights. Chosen to read as "the board glowing where
-// a voice is singing" rather than as an overlay in a foreign palette.
-const LCD_GLOW_RGB = '184, 212, 117';
+// Feature B: a soft lime-lemon glow for voice column/row highlights —
+// a warmer yellow-green in the same LCD hue family as the board. Reads
+// as "the board glowing where a voice is singing" without stepping out
+// of the Nokia palette.
+const LCD_GLOW_RGB = '230, 230, 110';
 
 export class Renderer {
   constructor(canvas) {

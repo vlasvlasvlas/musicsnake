@@ -13,13 +13,12 @@ export class Snake {
   reset() {
     this.direction = { x: 1, y: 0 };
     this.nextDirection = { x: 1, y: 0 };
+    // Start at the growth-gated minimum: one segment = one voice (soprano).
+    // The víbora earns alto/tenor/bass by growing (spec §5.1).
     this.segments = [
-      { x: Math.floor(this.gridCols / 2), y: Math.floor(this.gridRows / 2) },
-      { x: Math.floor(this.gridCols / 2) - 1, y: Math.floor(this.gridRows / 2) },
-      { x: Math.floor(this.gridCols / 2) - 2, y: Math.floor(this.gridRows / 2) },
-      { x: Math.floor(this.gridCols / 2) - 3, y: Math.floor(this.gridRows / 2) },
+      { x: Math.floor(this.gridCols / 2), y: Math.floor(this.gridRows / 2) }
     ];
-    this.growthQueue = 2;
+    this.growthQueue = 0;
     this.isDead = false;
     this.score = 0;
     this.wallMode = 'wrap'; // wrap, bounce, classic
