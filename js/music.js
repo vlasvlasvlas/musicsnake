@@ -63,6 +63,27 @@ export const SCALES = {
   }
 };
 
+/**
+ * The 10 Music Mouse pattern sequences (PDF pág 7, Pattern selectors 1-0).
+ * Values are scale-degree deltas applied to the XY-derived voice pitches
+ * each tick. `off` disables pattern modulation (soloes the snake geometry).
+ *
+ * Spec §5.4.
+ */
+export const MM_PATTERNS = {
+  off: { label: 'Off',                       deltas: [0] },
+  p1:  { label: '10-note cycle',             deltas: [0, 4, 5, 0, 4, 3, 4, 5, 0, 4] },
+  p2:  { label: '6-note triadic arpeggio',   deltas: [0, 2, 4, 7, 4, 2] },
+  p3:  { label: '8-note cycling scale',      deltas: [0, 1, 2, 3, 4, 3, 2, 1] },
+  p4:  { label: '14-note cycling scale',     deltas: [0, 1, 2, 3, 4, 5, 6, 7, 6, 5, 4, 3, 2, 1] },
+  p5:  { label: '8-note extended triadic',   deltas: [0, 4, 7, 11, 7, 4, 7, 4] },
+  p6:  { label: '16-note stepwise cycle',    deltas: [0, 1, 0, 1, 2, 1, 2, 3, 2, 3, 4, 3, 2, 1, 2, 1] },
+  p7:  { label: '10-note cycle B',           deltas: [0, 2, 3, 4, 5, 6, 5, 4, 3, 2] },
+  p8:  { label: '16-note irregular cycle',   deltas: [0, 7, 1, 6, 2, 5, 3, 4, 5, 2, 4, 5, 2, 6, 1, 7] },
+  p9:  { label: '8-note cycle',              deltas: [0, 1, 4, 1, 0, 4, 0, 4] },
+  p10: { label: '16-note cycle B',           deltas: [0, 7, 0, 0, 2, 1, 2, 4, 3, 2, 1, 2, 0, 0] }
+};
+
 export const TREATMENTS = {
   contrary: {
     name: 'Movimiento contrario',
@@ -261,5 +282,42 @@ export class MusicTheory {
 
     const n = Math.max(1, Math.min(4, activeVoiceCount | 0));
     return allVoices.slice(0, n);
+  }
+
+  /**
+   * Apply a Music Mouse pattern as a scale-degree delta on top of
+   * geometry-derived voices (spec §5.4). The pattern cycles its deltas
+   * across patternStep; symmetry decides whether voices mirror or move
+   * parallel. 'off' is a no-op.
+   */
+  applyPattern(voices, patternKey, patternStep, symmetry = 'parallel') {
+    if (patternKey === 'off' || !MM_PATTERNS[patternKey]) return voices;
+    const deltas = MM_PATTERNS[patternKey].deltas;
+    const delta = deltas[((patternStep % deltas.length) + deltas.length) % deltas.length];
+    if (delta === 0) return voices;
+
+    const notes = this.gridNotes;
+    const len = notes.length;
+    if (len === 0) return voices;
+
+    return voices.map((v, i) => {
+      if (!v || !v.note) return v;
+      const sign = (symmetry === 'contrary' && (i === 1 || i === 3)) ? -1 : 1;
+      const signedDelta = sign * delta;
+      // Find the voice's current index inside gridNotes by midi match.
+      let baseIdx = notes.findIndex(n => n.midi === v.note.midi);
+      if (baseIdx < 0) {
+        // Bass voice sits one octave below the grid (see getVoices); find
+        // the closest grid note by proximity rather than giving up.
+        baseIdx = 0;
+        let bestDist = Math.abs(notes[0].midi - v.note.midi);
+        for (let k = 1; k < len; k++) {
+          const d = Math.abs(notes[k].midi - v.note.midi);
+          if (d < bestDist) { bestDist = d; baseIdx = k; }
+        }
+      }
+      const newIdx = ((baseIdx + signedDelta) % len + len) % len;
+      return { ...v, note: notes[newIdx] };
+    });
   }
 }

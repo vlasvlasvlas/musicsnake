@@ -3,7 +3,7 @@
  * Connects Synth Engine, Music Systems, Snake Automata, Canvas Renderer and UI.
  */
 
-import { MusicTheory, SCALES, TREATMENTS, NOTES } from './music.js';
+import { MusicTheory, SCALES, TREATMENTS, NOTES, MM_PATTERNS } from './music.js';
 import { SynthEngine } from './audio.js';
 import { Snake } from './snake.js';
 import { FoodManager } from './foods.js';
@@ -24,7 +24,9 @@ export const PRESETS = {
     delayMix: 0.35,
     reverbMix: 0.4,
     arpPattern: 'chord',
-    autoBehavior: 'harmonicSeeker'
+    autoBehavior: 'harmonicSeeker',
+    pattern: 'p2',
+    symmetry: 'contrary'
   },
   ambientLydian: {
     name: 'Lydian Dreamscape',
@@ -39,7 +41,9 @@ export const PRESETS = {
     delayMix: 0.48,
     reverbMix: 0.65,
     arpPattern: 'drone',
-    autoBehavior: 'lissajous'
+    autoBehavior: 'lissajous',
+    pattern: 'p4',
+    symmetry: 'parallel'
   },
   berlinArp: {
     name: 'Berlin School Arp',
@@ -54,7 +58,9 @@ export const PRESETS = {
     delayMix: 0.42,
     reverbMix: 0.3,
     arpPattern: 'upDown',
-    autoBehavior: 'harmonicSeeker'
+    autoBehavior: 'harmonicSeeker',
+    pattern: 'p1',
+    symmetry: 'parallel'
   },
   kotoZen: {
     name: 'Hirajōshi Zen Garden',
@@ -69,7 +75,9 @@ export const PRESETS = {
     delayMix: 0.38,
     reverbMix: 0.5,
     arpPattern: 'cycle',
-    autoBehavior: 'brownian'
+    autoBehavior: 'brownian',
+    pattern: 'off',
+    symmetry: 'parallel'
   },
   acidSlither: {
     name: 'Acid Slither',
@@ -84,7 +92,9 @@ export const PRESETS = {
     delayMix: 0.35,
     reverbMix: 0.25,
     arpPattern: 'random',
-    autoBehavior: 'lissajous'
+    autoBehavior: 'lissajous',
+    pattern: 'p8',
+    symmetry: 'contrary'
   }
 };
 
@@ -105,6 +115,11 @@ class SnakeSynthApp {
     this.bpm1 = 110;
     this.bpm2 = 165;
     this.activeTempo = 1;
+
+    // MM patterns (Feature D — spec §5.4)
+    this.currentPattern = 'off';
+    this.currentSymmetry = 'parallel';
+    this.patternStep = 0;
 
     // Components
     this.music = new MusicTheory(0, 'pentatonicMajor', 2, 4);
@@ -150,6 +165,8 @@ class SnakeSynthApp {
       selScale: document.getElementById('selScale'),
       selRoot: document.getElementById('selRoot'),
       selTreatment: document.getElementById('selTreatment'),
+      selPattern: document.getElementById('selPattern'),
+      selSymmetry: document.getElementById('selSymmetry'),
       selWaveform: document.getElementById('selWaveform'),
       selArpPattern: document.getElementById('selArpPattern'),
       selAutoBehavior: document.getElementById('selAutoBehavior'),
@@ -191,6 +208,11 @@ class SnakeSynthApp {
     // Populate Treatments
     this.ui.selTreatment.innerHTML = Object.entries(TREATMENTS)
       .map(([k, t]) => `<option value="${k}">${t.name}</option>`)
+      .join('');
+
+    // Populate MM Patterns (Feature D)
+    this.ui.selPattern.innerHTML = Object.entries(MM_PATTERNS)
+      .map(([k, p]) => `<option value="${k}">${p.label}</option>`)
       .join('');
 
     // Populate Presets
@@ -321,6 +343,16 @@ class SnakeSynthApp {
       this.currentTreatment = e.target.value;
       this.updateStatusReadouts();
       this.notify(`Treatment: ${TREATMENTS[e.target.value].name}`);
+    });
+
+    this.ui.selPattern.addEventListener('change', (e) => {
+      this.currentPattern = e.target.value;
+      this.patternStep = 0; // restart cycle so a new pattern is heard from its first delta
+      this.notify(`Pattern: ${MM_PATTERNS[e.target.value]?.label ?? e.target.value}`);
+    });
+
+    this.ui.selSymmetry.addEventListener('change', (e) => {
+      this.currentSymmetry = e.target.value;
     });
 
     this.ui.selWaveform.addEventListener('change', (e) => {
@@ -589,6 +621,9 @@ class SnakeSynthApp {
     // (not yet migrated) keeps the current value rather than becoming undefined.
     this.bpm1 = p.bpm ?? p.bpm1 ?? this.bpm1;
     this.bpm2 = p.bpm2 ?? this.bpm2;
+    this.currentPattern = p.pattern ?? this.currentPattern;
+    this.currentSymmetry = p.symmetry ?? this.currentSymmetry;
+    this.patternStep = 0;
     this.snake.autoBehavior = p.autoBehavior;
 
     // Sliders
@@ -602,6 +637,8 @@ class SnakeSynthApp {
     this.ui.selScale.value = p.scale;
     this.ui.selRoot.value = p.root;
     this.ui.selTreatment.value = p.treatment;
+    this.ui.selPattern.value = this.currentPattern;
+    this.ui.selSymmetry.value = this.currentSymmetry;
     this.ui.selWaveform.value = p.waveform;
     this.ui.selArpPattern.value = p.arpPattern;
     this.ui.selAutoBehavior.value = p.autoBehavior;
@@ -693,8 +730,19 @@ class SnakeSynthApp {
     const activeVoiceCount = voiceCountForLength(this.snake.segments.length);
     this.currentVoices = this.music.getVoices(normHead, normHistory, this.currentTreatment, activeVoiceCount);
 
+    // 4b. Apply Music Mouse pattern as scale-degree delta (Feature D — spec §5.4)
+    this.currentVoices = this.music.applyPattern(
+      this.currentVoices,
+      this.currentPattern,
+      this.patternStep,
+      this.currentSymmetry
+    );
+
     // 4. Trigger Synth Note(s) based on Arpeggio Pattern
     this.triggerVoiceArpeggio(this.currentVoices);
+
+    // 4c. Advance pattern step for next tick
+    this.patternStep++;
 
     // 5. Add visual sound ripple at head position
     const cellW = this.canvas.width / (this.gridSize * (window.devicePixelRatio || 1));
