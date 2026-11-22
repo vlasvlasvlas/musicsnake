@@ -146,6 +146,10 @@ class SnakeSynthApp {
     this.isFrozen = false;
     this.isFrozenByHold = false;
 
+    // Transient boost multipliers applied by food powerups on top of the
+    // length-driven timbre modulation (reviewer A3). Default 1 = no boost.
+    this.foodBoost = { cutoff: 1, reverb: 1 };
+
     // Components
     this.music = new MusicTheory(0, 'pentatonicMajor', 2, 4);
     this.synth = new SynthEngine();
@@ -290,7 +294,8 @@ class SnakeSynthApp {
     // Reset Snake
     this.ui.btnReset.addEventListener('click', () => {
       this.snake.reset();
-      this.foodManager.spawnInitialFoods();
+      this._flushTransient({ clearFreeze: true });
+      this.foodManager.spawnInitialFoods(this.snake.segments);
       this.notify('Snake and Harmonic Matrix Reset');
     });
 
@@ -347,19 +352,8 @@ class SnakeSynthApp {
         this.snake.setGridSize(n, n);
         this.snake.reset();
         this.foodManager.setGridSize(n, n);
-        this.foodManager.spawnInitialFoods();
-        // Review Focus #1 (I2 fix): a full reset flushes every piece of
-        // per-tick state carried from the prior grid. activeVoiceNodes
-        // and the freeze flag were the two missed slots in the original
-        // implementation; without them a latch-frozen user would stay
-        // silently frozen on the new grid, and a lingering fullLegato
-        // voice would keep its scheduled stop pending.
-        this.voiceStep = 0;
-        this.patternStep = 0;
-        this.previousVoicePitches = [null, null, null, null];
-        this.synth.releaseAllVoices(0.12);
-        this.isFrozen = false;
-        this.isFrozenByHold = false;
+        this._flushTransient({ clearFreeze: true });
+        this.foodManager.spawnInitialFoods(this.snake.segments);
       });
     }
 
@@ -370,22 +364,26 @@ class SnakeSynthApp {
 
     // Musical Selectors
     this.ui.selScale.addEventListener('change', (e) => {
-      // Review Focus #2: release any live full-legato oscillators so they
-      // do not keep ringing at the old scale's pitches.
-      this.synth.releaseAllVoices(0.15);
+      // Flush voices + previousVoicePitches so group mode retriggers on
+      // the first post-swap tick (reviewer A5) and legato voices don't
+      // keep ringing at the old scale (Review Focus #2).
+      this._flushTransient();
       this.music.setScale(e.target.value);
       this.updateStatusReadouts();
       this.notify(`Scale changed to ${SCALES[e.target.value].name}`);
     });
 
     this.ui.selRoot.addEventListener('change', (e) => {
-      this.synth.releaseAllVoices(0.15);
+      this._flushTransient();
       this.music.setRoot(parseInt(e.target.value, 10));
       this.updateStatusReadouts();
       this.notify(`Root set to ${NOTES[e.target.value]}`);
     });
 
     this.ui.selTreatment.addEventListener('change', (e) => {
+      // Treatment change previously left legato voices and the voice-diff
+      // state behind (reviewer A5).
+      this._flushTransient();
       this.currentTreatment = e.target.value;
       this.updateStatusReadouts();
       this.notify(`Treatment: ${TREATMENTS[e.target.value].name}`);
@@ -533,6 +531,22 @@ class SnakeSynthApp {
       }
     });
 
+    // Reviewer G6: if the browser swallows the mouseup (window blur, tab
+    // switch, alt-tab), release the hold-freeze so the snake doesn't end
+    // up silently stuck. Latch-freeze (double-click) survives, as intended.
+    window.addEventListener('blur', () => {
+      if (this.isFrozenByHold) {
+        this.isFrozen = false;
+        this.isFrozenByHold = false;
+      }
+    });
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden && this.isFrozenByHold) {
+        this.isFrozen = false;
+        this.isFrozenByHold = false;
+      }
+    });
+
     // Feature I: double-click = toggle latch freeze.
     this.canvas.addEventListener('dblclick', (e) => {
       e.preventDefault();
@@ -589,6 +603,9 @@ class SnakeSynthApp {
         clearTimeout(longPressTimer);
         longPressTimer = null;
       }
+      // Reviewer G3: while frozen the finger drag must NOT retarget the
+      // snake, otherwise the sustain-pedal pre-aims the víbora in mobile.
+      if (this.isFrozen) return;
       if (dist < 18) return; // umbral mínimo de swipe
 
       if (this.mode === 'auto') {
@@ -706,6 +723,24 @@ class SnakeSynthApp {
     }
   }
 
+  /**
+   * Flush per-tick accumulators and release stuck audio on any transition
+   * that invalidates the current musical state (Reset, mode switch, grid
+   * resize, preset load, scale/root/treatment change). Centralizes the
+   * hygiene both reviewers flagged.
+   */
+  _flushTransient({ clearFreeze = false } = {}) {
+    this.synth.releaseAllVoices(0.12);
+    this.voiceStep = 0;
+    this.patternStep = 0;
+    this.previousVoicePitches = [null, null, null, null];
+    this.lastPlayingVoiceIdxs = [];
+    if (clearFreeze) {
+      this.isFrozen = false;
+      this.isFrozenByHold = false;
+    }
+  }
+
   setActiveTempo(which) {
     if (which !== 1 && which !== 2) return;
     this.activeTempo = which;
@@ -719,9 +754,18 @@ class SnakeSynthApp {
     if (this.ui.btnModeGame) this.ui.btnModeGame.classList.toggle('active', this.mode === 'game');
     if (this.ui.btnModeAuto) this.ui.btnModeAuto.classList.toggle('active', this.mode === 'auto');
 
+    // Game mode: the víbora cannot pass through its own body. Auto mode:
+    // free to coil over itself unless wallMode happens to be classic.
+    this.snake.killOnSelf = (this.mode === 'game');
+
+    // Reviewer G2: any mode switch needs the same hygiene as Reset so a
+    // latch-frozen user doesn't end up silent on the fresh snake and no
+    // fullLegato voice drones across the transition.
+    this._flushTransient({ clearFreeze: true });
+
     if (this.mode === 'game') {
       this.snake.reset();
-      this.foodManager.spawnInitialFoods();
+      this.foodManager.spawnInitialFoods(this.snake.segments);
       this.notify('MODO JUEGO — Flechas / WASD');
     } else {
       this.notify('MODO AUTO');
@@ -751,6 +795,11 @@ class SnakeSynthApp {
   applyPreset(presetKey) {
     const p = PRESETS[presetKey];
     if (!p) return;
+
+    // Reviewer G5: release stuck voices + reset accumulators before the
+    // new scale/root/waveform take effect, so legato tails don't bleed
+    // across preset swaps and the first post-preset tick retriggers cleanly.
+    this._flushTransient();
 
     this.music.setScale(p.scale);
     this.music.setRoot(p.root);
@@ -851,8 +900,26 @@ class SnakeSynthApp {
     // víbora re-crece.
     if (this.snake.isDead) {
       this.synth.triggerImpactSound();
-      this.snake.segments = this.snake.segments.slice(0, 1);
-      this.snake.growthQueue = 0;
+      if (this.mode === 'game') {
+        // Game mode: full restart (Snake-style Game Over). Víbora vuelve
+        // al centro con 1 segmento, score a 0, dirección reinicializada.
+        const cx = Math.floor(this.snake.gridCols / 2);
+        const cy = Math.floor(this.snake.gridRows / 2);
+        this.snake.segments = [{ x: cx, y: cy }];
+        this.snake.direction = { x: 1, y: 0 };
+        this.snake.nextDirection = { x: 1, y: 0 };
+        this.snake.score = 0;
+        this.snake.growthQueue = 0;
+        // Reviewer G4: pass snake segments so food never spawns on the
+        // reset position, which would otherwise cause an instant invisible
+        // consume on the next tick.
+        this.foodManager.spawnInitialFoods(this.snake.segments);
+      } else {
+        // Auto mode: muda de piel — shed to 1 segment at the last valid
+        // position without resetting score or respawning orbs.
+        this.snake.segments = this.snake.segments.slice(0, 1);
+        this.snake.growthQueue = 0;
+      }
       this.snake.isDead = false;
       // Feature F: release hanging full-legato oscillators on voices
       // 2/3/4 so they do not drone through the repli­egue.
@@ -871,13 +938,16 @@ class SnakeSynthApp {
       this.handleFoodConsumed(consumed);
     }
 
-    // 3. Timbral modulation by length (Feature H — spec §5.8)
+    // 3. Timbral modulation by length (Feature H — spec §5.8).
+    // Food powerup multipliers layer on top so filter/echo orbs actually
+    // produce an audible boost without being clobbered by the next tick
+    // (reviewer A3).
     const baseCutoff = parseInt(this.ui.sliderCutoff.value, 10);
     const baseReverb = parseFloat(this.ui.sliderReverb.value);
     const baseDelayFb = parseFloat(this.ui.sliderDelay.value);
     const timbre = computeTimbreByLength(this.snake.segments.length, baseCutoff, baseReverb, baseDelayFb);
-    this.synth.setFilterCutoff(timbre.cutoff);
-    this.synth.setReverbMix(timbre.reverb);
+    this.synth.setFilterCutoff(Math.min(9500, timbre.cutoff * this.foodBoost.cutoff));
+    this.synth.setReverbMix(Math.min(0.95, timbre.reverb * this.foodBoost.reverb));
     // delay time stays at user-set 0.35 (per spec §5.8 — only feedback modulates by length)
     this.synth.setDelayParams(0.35, timbre.delay, timbre.delay * 0.7);
 
@@ -943,14 +1013,15 @@ class SnakeSynthApp {
         break;
       }
       case 'filter': {
-        const originalCutoff = this.synth.filterCutoff;
-        this.synth.setFilterCutoff(Math.min(10000, originalCutoff * 2.2));
-        setTimeout(() => this.synth.setFilterCutoff(originalCutoff), 700);
+        // Multiplicative boost so tickMusicClock's length modulation
+        // doesn't clobber it (reviewer A3).
+        this.foodBoost.cutoff = 2.2;
+        setTimeout(() => { this.foodBoost.cutoff = 1; }, 700);
         break;
       }
       case 'echo': {
-        this.synth.setReverbMix(0.75);
-        setTimeout(() => this.synth.setReverbMix(0.4), 1800);
+        this.foodBoost.reverb = 1.8;
+        setTimeout(() => { this.foodBoost.reverb = 1; }, 1800);
         break;
       }
     }

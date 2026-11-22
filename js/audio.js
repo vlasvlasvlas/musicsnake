@@ -50,9 +50,47 @@ export class SynthEngine {
     // (Feature F — spec §5.6). Each slot: { osc, subOsc, voiceGain, midiNote } | null
     this.activeVoiceNodes = [null, null, null, null];
 
+    // Per-voice pending MIDI Note Off timers so a late-firing timer from
+    // a stale half/staccato note cannot cut a fresh note on the same
+    // voice (reviewer A1/A2/A11).
+    this.pendingMidiNoteOffs = [null, null, null, null];
+
     // Food orb sound bank + global volume for the pickup timbres.
     this.foodBank = 'analog';   // 'analog' | 'arcade' | 'fm'
     this.foodVolume = 0.5;      // 0..1 multiplier applied to peakVol per hit
+
+    // Mellotron sample cache (lazy-loaded after init). Base pitch assumed
+    // at C4 (261.63 Hz) — the sample is re-pitched by setting playbackRate.
+    this.mellotronBuffers = {}; // { mellotron1: AudioBuffer, mellotron2: AudioBuffer }
+    this.mellotronBaseFreq = 261.63;
+    // Per-sample playback metadata.
+    //   startOffset: trim leading silence / attack transient
+    //   loopStart:   match startOffset so the loop never revisits dead zone
+    //   releaseExtra: extra seconds added to env.release — gives samples a
+    //                 natural "arrastre" tail beyond the tick-level duration.
+    this.mellotronMeta = {
+      mellotron1: { startOffset: 0,    loopStart: 0,    releaseExtra: 1.5 },
+      mellotron2: { startOffset: 0.55, loopStart: 0.55, releaseExtra: 0.4 }
+    };
+  }
+
+  async _loadMellotronSamples() {
+    if (!this.ctx) return;
+    const samples = [
+      ['mellotron1', 'assets/samples/mellotron1.wav'],
+      ['mellotron2', 'assets/samples/mellotron2.wav']
+    ];
+    for (const [key, url] of samples) {
+      if (this.mellotronBuffers[key]) continue;
+      try {
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const arrayBuf = await resp.arrayBuffer();
+        this.mellotronBuffers[key] = await this.ctx.decodeAudioData(arrayBuf);
+      } catch (e) {
+        console.warn(`[mellotron] failed to load ${url}:`, e);
+      }
+    }
   }
 
   setFoodBank(bank) {
@@ -73,6 +111,16 @@ export class SynthEngine {
 
     const AudioContext = window.AudioContext || window.webkitAudioContext;
     this.ctx = new AudioContext();
+
+    // Pause/release the voice lifecycle when the AudioContext is suspended
+    // by the browser (tab blur, iOS Safari background, etc) so no event
+    // pileup fires on resume (reviewer A6).
+    this.ctx.onstatechange = () => {
+      if (!this.ctx) return;
+      if (this.ctx.state === 'suspended' || this.ctx.state === 'interrupted') {
+        this.releaseAllVoices(0.02);
+      }
+    };
 
     // Master Gain & Limiter
     this.masterGainNode = this.ctx.createGain();
@@ -110,11 +158,22 @@ export class SynthEngine {
     this.delayOut.connect(this.limiter);
     this.reverbOut.connect(this.limiter);
 
+    // Dedicated food-sound bus attenuates the triple-connected food voices
+    // (direct + delay + reverb all summing at the limiter) so orb pickups
+    // don't push ~2-3 dB hotter than the main synth (reviewer A7).
+    this.foodBus = this.ctx.createGain();
+    this.foodBus.gain.setValueAtTime(0.6, this.ctx.currentTime);
+    this.foodBus.connect(this.limiter);
+
     this.limiter.connect(this.masterGainNode);
     this.masterGainNode.connect(this.ctx.destination);
 
     // Try MIDI initialization
     this.initMidi();
+
+    // Kick off mellotron sample load in the background; the trigger path
+    // falls back to a sawtooth if a selection hits before loading finishes.
+    this._loadMellotronSamples();
   }
 
   setupDelay() {
@@ -252,12 +311,18 @@ export class SynthEngine {
    */
   triggerVoiceNote(freq, voiceIndex, duration = 0.3, velocity = 0.8, articulation = 'halfLegato') {
     if (!this.ctx || this.isMuted || !freq || freq <= 0) return;
+    // Don't schedule notes while the context is paused — they would pile
+    // up and fire together on resume (reviewer A6).
+    if (this.ctx.state !== 'running') return;
     const now = this.ctx.currentTime;
 
-    // Full-legato: release any prior oscillator on this voice first so the
-    // new pitch takes over instead of stacking (Review Focus #2).
-    if (articulation === 'fullLegato' && this.activeVoiceNodes[voiceIndex]) {
-      this.releaseVoice(voiceIndex, 0.08);
+    // Always pre-release the prior voice on this slot so rapid retriggers
+    // at high BPM never stack oscillators or sample sources on top of
+    // each other (reviewer A4). FullLegato gets a slightly longer fade
+    // because it is typically sustaining, not percussive.
+    if (this.activeVoiceNodes[voiceIndex]) {
+      const preRelease = articulation === 'fullLegato' ? 0.08 : 0.02;
+      this.releaseVoice(voiceIndex, preRelease);
     }
 
     // Articulation → effective sustain length.
@@ -280,18 +345,46 @@ export class SynthEngine {
       panNode.pan.setValueAtTime(pans[voiceIndex % 4], now);
     }
 
-    // Voice Oscillator & Sub-oscillator for warmth
-    const osc = this.ctx.createOscillator();
-    osc.type = this.waveform;
-    osc.frequency.setValueAtTime(freq, now);
+    // Mellotron sample path — playbackRate shifts a looped buffer to pitch.
+    const isMellotron = this.waveform === 'mellotron1' || this.waveform === 'mellotron2';
+    const mellotronBuffer = isMellotron ? this.mellotronBuffers[this.waveform] : null;
 
-    const subOsc = this.ctx.createOscillator();
-    subOsc.type = 'sine';
-    subOsc.frequency.setValueAtTime(freq * 0.5, now); // 1 octave lower sub
+    let osc = null;
+    let subOsc = null;
+    let sampleSource = null;
+
+    if (mellotronBuffer) {
+      sampleSource = this.ctx.createBufferSource();
+      sampleSource.buffer = mellotronBuffer;
+      sampleSource.loop = true;
+      sampleSource.playbackRate.setValueAtTime(freq / this.mellotronBaseFreq, now);
+      const meta = this.mellotronMeta[this.waveform] || { startOffset: 0, loopStart: 0 };
+      if (meta.loopStart > 0) sampleSource.loopStart = meta.loopStart;
+      // loopEnd defaults to 0 which the browser interprets as buffer end.
+    } else {
+      // Waveform path (triangle / saw / sine / square). Falls back to
+      // sawtooth if a mellotron slot is requested but the buffer isn't
+      // loaded yet.
+      const wf = isMellotron ? 'sawtooth' : this.waveform;
+      osc = this.ctx.createOscillator();
+      osc.type = wf;
+      osc.frequency.setValueAtTime(freq, now);
+
+      subOsc = this.ctx.createOscillator();
+      subOsc.type = 'sine';
+      subOsc.frequency.setValueAtTime(freq * 0.5, now); // 1 octave lower sub
+    }
 
     const voiceGain = this.ctx.createGain();
     const env = this.envelope;
     const peakGain = (velocity * 0.22);
+
+    // Mellotron samples get a longer release tail than the tick clock
+    // would normally give them, so the note "arrastra" past the step.
+    const mellotronReleaseExtra = sampleSource
+      ? ((this.mellotronMeta[this.waveform] || {}).releaseExtra || 0)
+      : 0;
+    const effectiveRelease = env.release + mellotronReleaseExtra;
 
     // ADSR Envelope — sustain plateau for fullLegato is just the sustain
     // level held at sustainLen (no ramp to 0 until releaseVoice fires).
@@ -304,17 +397,20 @@ export class SynthEngine {
     if (articulation !== 'fullLegato') {
       voiceGain.gain.exponentialRampToValueAtTime(
         0.0001,
-        now + sustainLen + env.release
+        now + sustainLen + effectiveRelease
       );
     }
 
-    // Sub-osc mix
-    const subGain = this.ctx.createGain();
-    subGain.gain.setValueAtTime(0.2, now);
-    subOsc.connect(subGain);
-    subGain.connect(voiceGain);
-
-    osc.connect(voiceGain);
+    // Connect sources to voiceGain.
+    if (sampleSource) {
+      sampleSource.connect(voiceGain);
+    } else {
+      const subGain = this.ctx.createGain();
+      subGain.gain.setValueAtTime(0.2, now);
+      subOsc.connect(subGain);
+      subGain.connect(voiceGain);
+      osc.connect(voiceGain);
+    }
 
     if (panNode) {
       voiceGain.connect(panNode);
@@ -323,35 +419,44 @@ export class SynthEngine {
       voiceGain.connect(this.mainFilter);
     }
 
-    osc.start(now);
-    subOsc.start(now);
-    const stopTime = now + sustainLen + env.release + 0.1;
-    osc.stop(stopTime);
-    subOsc.stop(stopTime);
+    const stopTime = now + sustainLen + effectiveRelease + 0.1;
+    if (sampleSource) {
+      const meta = this.mellotronMeta[this.waveform] || { startOffset: 0 };
+      sampleSource.start(now, meta.startOffset || 0);
+      sampleSource.stop(stopTime);
+    } else {
+      osc.start(now);
+      subOsc.start(now);
+      osc.stop(stopTime);
+      subOsc.stop(stopTime);
+    }
 
     // Track the active slot so releaseVoice / releaseAllVoices can reach it.
     const midiNote = Math.round(69 + 12 * Math.log2(freq / 440));
-    this.activeVoiceNodes[voiceIndex] = { osc, subOsc, voiceGain, midiNote, articulation };
+    this.activeVoiceNodes[voiceIndex] = { osc, subOsc, sampleSource, voiceGain, midiNote, articulation };
 
     // Non-legato slots self-clear after their scheduled stop so later
-    // retriggers don't try to release a dead osc.
+    // retriggers don't try to release a dead source.
     if (articulation !== 'fullLegato') {
-      const nullAfterMs = (sustainLen + env.release + 0.12) * 1000;
+      const nullAfterMs = (sustainLen + effectiveRelease + 0.12) * 1000;
+      const sentinel = osc ?? sampleSource;
       setTimeout(() => {
-        if (this.activeVoiceNodes[voiceIndex]?.osc === osc) {
+        const slot = this.activeVoiceNodes[voiceIndex];
+        if (slot && (slot.osc === sentinel || slot.sampleSource === sentinel)) {
           this.activeVoiceNodes[voiceIndex] = null;
         }
       }, nullAfterMs);
     }
 
-    // MIDI output lifecycle (Review Focus #3):
-    //   staccato / halfLegato → paired Note Off via setTimeout as before
-    //   fullLegato → Note On now, Note Off deferred to releaseVoice
+    // MIDI output lifecycle (Review Focus #3 + reviewer A1/A2/A11):
+    //   staccato / halfLegato → paired Note Off via setTimeout, tracked
+    //     per voice so a retrigger can cancel the stale timer.
+    //   fullLegato → Note On now, Note Off deferred to releaseVoice.
     if (this.midiEnabled && this.midiOutput) {
       if (articulation === 'fullLegato') {
         this.midiOutput.send([0x90, midiNote, Math.floor(velocity * 127)]);
       } else {
-        this.sendMidiNote(midiNote, Math.floor(velocity * 127), sustainLen);
+        this.sendMidiNote(midiNote, Math.floor(velocity * 127), sustainLen, voiceIndex);
       }
     }
   }
@@ -364,7 +469,7 @@ export class SynthEngine {
     const slot = this.activeVoiceNodes[voiceIndex];
     if (!slot || !this.ctx) return;
     const now = this.ctx.currentTime;
-    const { osc, subOsc, voiceGain, midiNote } = slot;
+    const { osc, subOsc, sampleSource, voiceGain, midiNote } = slot;
 
     try {
       voiceGain.gain.cancelScheduledValues(now);
@@ -372,14 +477,30 @@ export class SynthEngine {
       voiceGain.gain.exponentialRampToValueAtTime(0.0001, now + releaseSec);
     } catch (_) { /* node may be disconnected */ }
 
-    try { osc.stop(now + releaseSec + 0.02); } catch (_) { /* already stopped */ }
-    try { subOsc.stop(now + releaseSec + 0.02); } catch (_) {}
+    const stopAt = now + releaseSec + 0.02;
+    try { osc?.stop(stopAt); } catch (_) { /* already stopped */ }
+    try { subOsc?.stop(stopAt); } catch (_) {}
+    try { sampleSource?.stop(stopAt); } catch (_) {}
 
     if (this.midiEnabled && this.midiOutput && typeof midiNote === 'number') {
       try { this.midiOutput.send([0x80, midiNote, 0]); } catch (_) {}
     }
 
+    // Cancel any pending setTimeout-based Note Off for this slot so it
+    // can't fire later and cut a future retrigger (reviewer A1).
+    this._clearPendingMidiNoteOff(voiceIndex, { send: false });
+
     this.activeVoiceNodes[voiceIndex] = null;
+  }
+
+  _clearPendingMidiNoteOff(voiceIndex, { send = true } = {}) {
+    const pending = this.pendingMidiNoteOffs[voiceIndex];
+    if (!pending) return;
+    clearTimeout(pending.timerId);
+    if (send && this.midiEnabled && this.midiOutput) {
+      try { this.midiOutput.send([0x80, pending.note, 0]); } catch (_) {}
+    }
+    this.pendingMidiNoteOffs[voiceIndex] = null;
   }
 
   /**
@@ -400,6 +521,7 @@ export class SynthEngine {
    */
   triggerFoodSound(foodType = 'scale') {
     if (!this.ctx || this.isMuted) return;
+    if (this.ctx.state !== 'running') return; // reviewer A6
     switch (this.foodBank) {
       case 'arcade': return this._foodArcade(foodType);
       case 'fm':     return this._foodFM(foodType);
@@ -451,7 +573,7 @@ export class SynthEngine {
     filter.connect(gain);
     gain.connect(this.delayIn);
     gain.connect(this.reverbIn);
-    gain.connect(this.limiter);
+    gain.connect(this.foodBus);
 
     const stopAt = now + duration + 0.1;
     osc.start(now);
@@ -480,7 +602,7 @@ export class SynthEngine {
     osc.connect(gain);
     gain.connect(this.delayIn);
     gain.connect(this.reverbIn);
-    gain.connect(this.limiter);
+    gain.connect(this.foodBus);
 
     osc.start(now);
     osc.stop(now + 0.4);
@@ -526,7 +648,7 @@ export class SynthEngine {
     carrier.connect(gain);
     gain.connect(this.delayIn);
     gain.connect(this.reverbIn);
-    gain.connect(this.limiter);
+    gain.connect(this.foodBus);
 
     const stopAt = now + duration + 0.12;
     carrier.start(now);
@@ -558,15 +680,28 @@ export class SynthEngine {
     osc.stop(now + 0.2);
   }
 
-  sendMidiNote(note, velocity = 90, duration = 0.3) {
+  sendMidiNote(note, velocity = 90, duration = 0.3, voiceIndex = null) {
     if (!this.midiOutput) return;
-    const ch = 0x90; // Note On ch 1
+    // Flush any older pending Note Off for this voice BEFORE sending
+    // Note On, so the external synth hears Off-On rather than letting a
+    // stale timer fire mid-way through the new note (reviewer A1).
+    if (voiceIndex != null) this._clearPendingMidiNoteOff(voiceIndex);
+
+    const ch = 0x90;    // Note On ch 1
     const chOff = 0x80; // Note Off ch 1
     this.midiOutput.send([ch, note, velocity]);
-    setTimeout(() => {
+
+    const timerId = setTimeout(() => {
       if (this.midiOutput) {
-        this.midiOutput.send([chOff, note, 0]);
+        try { this.midiOutput.send([chOff, note, 0]); } catch (_) {}
+      }
+      if (voiceIndex != null && this.pendingMidiNoteOffs[voiceIndex]?.timerId === timerId) {
+        this.pendingMidiNoteOffs[voiceIndex] = null;
       }
     }, duration * 1000);
+
+    if (voiceIndex != null) {
+      this.pendingMidiNoteOffs[voiceIndex] = { timerId, note };
+    }
   }
 }

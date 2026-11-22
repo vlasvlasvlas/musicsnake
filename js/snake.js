@@ -7,6 +7,13 @@ export class Snake {
   constructor(gridCols = 32, gridRows = 32) {
     this.gridCols = gridCols;
     this.gridRows = gridRows;
+    // User-configurable settings that must outlive game-session resets.
+    // reset() is for game-state (position, score, direction); these are
+    // settings the user chose and should never be wiped by a restart or
+    // a mode switch.
+    this.wallMode = 'wrap';
+    this.autoBehavior = 'harmonicSeeker';
+    this.killOnSelf = false;
     this.reset();
   }
 
@@ -21,10 +28,8 @@ export class Snake {
     this.growthQueue = 0;
     this.isDead = false;
     this.score = 0;
-    this.wallMode = 'wrap'; // wrap, bounce, classic
-
-    // Autonomous steering state
-    this.autoBehavior = 'harmonicSeeker'; // harmonicSeeker, lissajous, brownian, mouseFollow
+    // wallMode, autoBehavior, killOnSelf intentionally NOT reset — they
+    // are user-configurable settings that must survive restart.
     this.lissajousPhase = 0;
     this.brownianDirChangeTimer = 0;
     this.mouseTarget = null;
@@ -215,7 +220,7 @@ export class Snake {
       return seg.x === newX && seg.y === newY;
     });
 
-    if (hitSelf && this.wallMode === 'classic') {
+    if (hitSelf && (this.wallMode === 'classic' || this.killOnSelf)) {
       this.isDead = true;
       return { hitBoundary, hitSelf: true };
     }

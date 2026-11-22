@@ -127,25 +127,54 @@ export class Renderer {
 
   drawSnake(ctx, snake, cw, ch) {
     const segs = snake.segments;
+    if (!segs.length) return;
+
     const pad = Math.max(1, Math.round(Math.min(cw, ch) * 0.06));
-    const r = Math.min(cw, ch) * 0.28; // border-radius
+    const thickness = Math.min(cw, ch) - 2 * pad;
 
     ctx.fillStyle = LCD_INK;
+    ctx.strokeStyle = LCD_INK;
 
-    segs.forEach(seg => {
-      const x = seg.x * cw + pad;
-      const y = seg.y * ch + pad;
-      const sw = cw - pad * 2;
-      const sh = ch - pad * 2;
+    // 1-segment víbora: punto redondo (pre-crecimiento, soprano sola).
+    if (segs.length === 1) {
+      const cx = segs[0].x * cw + cw / 2;
+      const cy = segs[0].y * ch + ch / 2;
+      ctx.beginPath();
+      ctx.arc(cx, cy, thickness / 2, 0, Math.PI * 2);
+      ctx.fill();
+      return;
+    }
 
-      if (ctx.roundRect) {
-        ctx.beginPath();
-        ctx.roundRect(x, y, sw, sh, r);
-        ctx.fill();
-      } else {
-        ctx.fillRect(x, y, sw, sh);
+    // Cuerpo como cinta continua: path por los centros con stroke redondo.
+    // Los lineCap/lineJoin 'round' reemplazan los border-radius por caps
+    // reales en la cabeza y la cola, y curvas suaves en cada giro.
+    ctx.lineWidth = thickness;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    // Si la víbora cruza un borde en modo wrap/bounce, el salto entre
+    // segmentos es mayor a una celda — en ese caso cerramos el sub-path
+    // y arrancamos uno nuevo para no dibujar una línea atravesando la
+    // grilla entera.
+    ctx.beginPath();
+    for (let i = 0; i < segs.length; i++) {
+      const cx = segs[i].x * cw + cw / 2;
+      const cy = segs[i].y * ch + ch / 2;
+      if (i === 0) {
+        ctx.moveTo(cx, cy);
+        continue;
       }
-    });
+      const dx = Math.abs(segs[i].x - segs[i - 1].x);
+      const dy = Math.abs(segs[i].y - segs[i - 1].y);
+      if (dx > 1 || dy > 1) {
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+      } else {
+        ctx.lineTo(cx, cy);
+      }
+    }
+    ctx.stroke();
   }
 
   drawFoods(ctx, foods, cw, ch) {

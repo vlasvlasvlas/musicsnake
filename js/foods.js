@@ -64,10 +64,10 @@ export class FoodManager {
     this.gridRows = rows;
   }
 
-  spawnInitialFoods() {
+  spawnInitialFoods(avoidCoords = []) {
     this.foods = [];
     for (let i = 0; i < this.maxFoods; i++) {
-      this.spawnFood();
+      this.spawnFood(avoidCoords);
     }
   }
 
