@@ -1,5 +1,9 @@
 # MusicSnake
 
+![Music Mouse en pantalla con el cartel debajo](docs/images/music-mouse-only-restriction.png)
+
+> *"The only restriction is your imagination."*
+
 Instrumento generativo web. Cruce entre el Snake del Nokia y *Music Mouse: An Intelligent Instrument* de Laurie Spiegel (1986).
 
 Una víbora que toca música polifónica a 4 voces en tiempo real: su cabeza controla soprano y alto (ejes X / Y del movimiento), el punto medio del cuerpo el tenor, la cola el bajo. Cada paso en la grilla genera un evento armónico. A medida que la víbora crece, se desbloquean voces nuevas — arranca en 1 segmento sonando soprano sola y llega a cuarteto completo.
