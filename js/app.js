@@ -8,6 +8,7 @@ import { SynthEngine } from './audio.js';
 import { Snake } from './snake.js';
 import { FoodManager } from './foods.js';
 import { Renderer } from './renderer.js';
+import { voiceCountForLength } from './growth.js';
 
 export const PRESETS = {
   spiegel1986: {
@@ -269,6 +270,13 @@ class SnakeSynthApp {
         this.snake.reset();
         this.foodManager.setGridSize(n, n);
         this.foodManager.spawnInitialFoods();
+        // Review Focus #1: reset per-tick accumulators so no stale state
+        // leaks across grid changes. Forward-declared slots (patternStep,
+        // previousVoicePitches) are set by Tasks 5 and 7; nulling them
+        // here keeps the reset complete once they exist.
+        this.voiceStep = 0;
+        this.patternStep = 0;
+        this.previousVoicePitches = [null, null, null, null];
       });
     }
 
@@ -624,10 +632,11 @@ class SnakeSynthApp {
     const lengthRatio = Math.min(2.0, 1 + (this.snake.segments.length - 4) * 0.035);
     this.synth.setFilterCutoff(Math.min(9500, baseCutoff * lengthRatio));
 
-    // 4. Derive 4 Laurie Spiegel Voices from Snake Geometry
+    // 4. Derive Laurie Spiegel Voices from Snake Geometry (growth-gated — Feature A)
     const normHead = this.snake.getNormalizedHead();
     const normHistory = this.snake.getNormalizedSegments();
-    this.currentVoices = this.music.getVoices(normHead, normHistory, this.currentTreatment);
+    const activeVoiceCount = voiceCountForLength(this.snake.segments.length);
+    this.currentVoices = this.music.getVoices(normHead, normHistory, this.currentTreatment, activeVoiceCount);
 
     // 4. Trigger Synth Note(s) based on Arpeggio Pattern
     this.triggerVoiceArpeggio(this.currentVoices);
@@ -691,8 +700,10 @@ class SnakeSynthApp {
         }
       });
     } else if (pattern === 'upDown') {
-      // Voices cycle 0, 1, 2, 3, 2, 1...
-      const order = [0, 1, 2, 3, 2, 1];
+      // Voices cycle up and back, truncated to active voice count
+      const fullOrder = [0, 1, 2, 3, 2, 1];
+      const order = fullOrder.filter(i => i < voices.length);
+      if (order.length === 0) return;
       const idx = order[this.voiceStep % order.length];
       const v = voices[idx];
       if (v && v.note) {

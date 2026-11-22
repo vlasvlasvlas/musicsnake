@@ -160,12 +160,17 @@ export class MusicTheory {
   }
 
   /**
-   * Derive 4 polyphonic voices like Laurie Spiegel's Music Mouse
+   * Derive polyphonic voices like Laurie Spiegel's Music Mouse.
+   * Always computes 4 voices to preserve treatment math (contrary, mirror,
+   * cluster, canonDelay all reference the full set), then truncates to
+   * activeVoiceCount at return.
+   *
    * @param {Object} pos - Normalized coordinates {x, y} of the snake head
    * @param {Array} history - Previous segment normalized coordinates [{x, y}, ...]
    * @param {String} treatment - Harmonic treatment mode
+   * @param {Number} activeVoiceCount - 1..4 (default 4 preserves back-compat)
    */
-  getVoices(pos, history = [], treatment = 'contrary') {
+  getVoices(pos, history = [], treatment = 'contrary', activeVoiceCount = 4) {
     const notes = this.gridNotes;
     const len = notes.length;
     if (len === 0) return [];
@@ -247,11 +252,14 @@ export class MusicTheory {
       };
     }
 
-    return [
+    const allVoices = [
       { id: 1, name: 'Soprano (Cabeza X)', note: v1, pan: -0.65 },
       { id: 2, name: 'Alto (Cabeza Y)', note: v2, pan: 0.65 },
       { id: 3, name: 'Tenor (Cuerpo Medio)', note: v3, pan: -0.25 },
       { id: 4, name: 'Bajo/Drone (Cola)', note: bassNote, pan: 0.25 }
     ];
+
+    const n = Math.max(1, Math.min(4, activeVoiceCount | 0));
+    return allVoices.slice(0, n);
   }
 }
