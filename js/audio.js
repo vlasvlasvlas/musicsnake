@@ -57,7 +57,7 @@ export class SynthEngine {
 
     // Food orb sound bank + global volume for the pickup timbres.
     this.foodBank = 'analog';   // 'analog' | 'arcade' | 'fm'
-    this.foodVolume = 0.5;      // 0..1 multiplier applied to peakVol per hit
+    this.foodVolume = 0;      // 0..1 multiplier applied to peakVol per hit
 
     // Mellotron sample cache (lazy-loaded after init). Base pitch assumed
     // at C4 (261.63 Hz) — the sample is re-pitched by setting playbackRate.
