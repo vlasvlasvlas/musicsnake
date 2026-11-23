@@ -122,8 +122,9 @@ class SnakeSynthApp {
     // Dual tempo (Feature E — spec §5.5). Music Mouse had two tempos
     // alternable with `\`. Only one is active at a time (no polyrhythm —
     // that would belong to Camino 2/3).
-    this.bpm1 = 110;
-    this.bpm2 = 165;
+    this.bpm1 = 90;
+    this.bpm2Ratio = 1.5;
+    this.bpm2 = Math.round(this.bpm1 * this.bpm2Ratio);
     this.activeTempo = 1;
 
     // MM patterns (Feature D — spec §5.4)
@@ -149,6 +150,7 @@ class SnakeSynthApp {
     // Transient boost multipliers applied by food powerups on top of the
     // length-driven timbre modulation (reviewer A3). Default 1 = no boost.
     this.foodBoost = { cutoff: 1, reverb: 1 };
+    this.lfoActive = false;
 
     // Components
     this.music = new MusicTheory(0, 'pentatonicMajor', 2, 4);
@@ -180,8 +182,7 @@ class SnakeSynthApp {
       btnStart: document.getElementById('btnStart'),
       btnPlayPause: document.getElementById('btnPlayPause'),
       btnReset: document.getElementById('btnReset'),
-      btnModeGame: document.getElementById('btnModeGame'),
-      btnModeAuto: document.getElementById('btnModeAuto'),
+      btnModeToggle: document.getElementById('btnModeToggle'),
       btnMute: document.getElementById('btnMute'),
       btnAbout: document.getElementById('btnAbout'),
       aboutOverlay: document.getElementById('aboutOverlay'),
@@ -216,6 +217,7 @@ class SnakeSynthApp {
       valCutoff: document.getElementById('valCutoff'),
       sliderRes: document.getElementById('sliderRes'),
       valRes: document.getElementById('valRes'),
+      btnLFO: document.getElementById('btnLFO'),
       sliderDelay: document.getElementById('sliderDelay'),
       valDelay: document.getElementById('valDelay'),
       sliderReverb: document.getElementById('sliderReverb'),
@@ -300,8 +302,9 @@ class SnakeSynthApp {
     });
 
     // Mode Toggle
-    this.ui.btnModeGame.addEventListener('click', () => this.setAppMode('game'));
-    this.ui.btnModeAuto.addEventListener('click', () => this.setAppMode('auto'));
+    this.ui.btnModeToggle.addEventListener('click', () => {
+      this.setAppMode(this.mode === 'auto' ? 'game' : 'auto');
+    });
 
     // Mute
     this.ui.btnMute.addEventListener('click', () => {
@@ -443,15 +446,33 @@ class SnakeSynthApp {
     this.ui.sliderBpm1.addEventListener('input', (e) => {
       this.bpm1 = parseInt(e.target.value, 10);
       this.ui.valBpm1.textContent = `${this.bpm1} BPM`;
+      this.bpm2 = Math.round(this.bpm1 * this.bpm2Ratio);
+      this.synth.setLFOFreq(this.bpm);
     });
 
     this.ui.sliderBpm2.addEventListener('input', (e) => {
-      this.bpm2 = parseInt(e.target.value, 10);
-      this.ui.valBpm2.textContent = `${this.bpm2} BPM`;
+      const v = parseFloat(e.target.value);
+      this.bpm2Ratio = Math.pow(2, v * 2);
+      this.bpm2 = Math.round(this.bpm1 * this.bpm2Ratio);
+      this.ui.valBpm2.textContent = this.bpm2Ratio >= 1
+        ? `×${this.bpm2Ratio.toFixed(2).replace(/\.?0+$/, '')}`
+        : `÷${(1 / this.bpm2Ratio).toFixed(2).replace(/\.?0+$/, '')}`;
+      this.synth.setLFOFreq(this.bpm);
     });
 
     this.ui.btnTempoToggle.addEventListener('click', () => {
       this.setActiveTempo(this.activeTempo === 1 ? 2 : 1);
+    });
+
+    this.ui.btnLFO.addEventListener('click', () => {
+      this.lfoActive = !this.lfoActive;
+      this.ui.btnLFO.classList.toggle('active', this.lfoActive);
+      const baseCutoff = parseInt(this.ui.sliderCutoff.value, 10);
+      this.synth.setLFOActive(this.lfoActive, this.bpm, baseCutoff);
+      if (!this.lfoActive) {
+        const res = parseFloat(this.ui.sliderRes.value);
+        this.synth.mainFilter.Q.setTargetAtTime(res, this.synth.ctx.currentTime, 0.3);
+      }
     });
 
     this.ui.sliderCutoff.addEventListener('input', (e) => {
@@ -747,12 +768,14 @@ class SnakeSynthApp {
     if (this.ui.btnTempoToggle) {
       this.ui.btnTempoToggle.textContent = `Tempo ${which} (Tab)`;
     }
+    this.synth.setLFOFreq(this.bpm);
   }
 
   setAppMode(newMode) {
     this.mode = newMode;
-    if (this.ui.btnModeGame) this.ui.btnModeGame.classList.toggle('active', this.mode === 'game');
-    if (this.ui.btnModeAuto) this.ui.btnModeAuto.classList.toggle('active', this.mode === 'auto');
+    if (this.ui.btnModeToggle) {
+      this.ui.btnModeToggle.textContent = this.mode === 'auto' ? 'AUTO' : 'JUEGO';
+    }
 
     // Game mode: the víbora cannot pass through its own body. Auto mode:
     // free to coil over itself unless wallMode happens to be classic.
@@ -809,7 +832,10 @@ class SnakeSynthApp {
     // Review Focus #4: ?? fallback — a preset without bpm (legacy) or bpm2
     // (not yet migrated) keeps the current value rather than becoming undefined.
     this.bpm1 = p.bpm ?? p.bpm1 ?? this.bpm1;
-    this.bpm2 = p.bpm2 ?? this.bpm2;
+    if (p.bpm2 != null) {
+      this.bpm2Ratio = p.bpm2 / this.bpm1;
+      this.bpm2 = p.bpm2;
+    }
     this.currentPattern = p.pattern ?? this.currentPattern;
     this.currentSymmetry = p.symmetry ?? this.currentSymmetry;
     this.patternStep = 0;
@@ -839,8 +865,10 @@ class SnakeSynthApp {
 
     this.ui.sliderBpm1.value = this.bpm1;
     this.ui.valBpm1.textContent = `${this.bpm1} BPM`;
-    this.ui.sliderBpm2.value = this.bpm2;
-    this.ui.valBpm2.textContent = `${this.bpm2} BPM`;
+    this.ui.sliderBpm2.value = Math.log2(this.bpm2Ratio) / 2;
+    this.ui.valBpm2.textContent = this.bpm2Ratio >= 1
+      ? `×${this.bpm2Ratio.toFixed(2).replace(/\.?0+$/, '')}`
+      : `÷${(1 / this.bpm2Ratio).toFixed(2).replace(/\.?0+$/, '')}`;
     this.ui.sliderCutoff.value = p.cutoff;
     this.ui.valCutoff.textContent = `${p.cutoff} Hz`;
     this.ui.sliderRes.value = p.resonance;

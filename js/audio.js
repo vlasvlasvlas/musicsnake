@@ -139,6 +139,16 @@ export class SynthEngine {
     this.mainFilter.frequency.setValueAtTime(this.filterCutoff, this.ctx.currentTime);
     this.mainFilter.Q.setValueAtTime(this.filterResonance, this.ctx.currentTime);
 
+    // LFO (tempo-synced filter sweep)
+    this.lfoOsc = this.ctx.createOscillator();
+    this.lfoOsc.type = 'sine';
+    this.lfoOsc.frequency.value = 1.5; // Hz, updated when BPM changes
+    this.lfoGain = this.ctx.createGain();
+    this.lfoGain.gain.value = 0; // silent until activated
+    this.lfoOsc.connect(this.lfoGain);
+    this.lfoGain.connect(this.mainFilter.frequency);
+    this.lfoOsc.start();
+
     // Delay Node Setup
     this.setupDelay();
 
@@ -277,6 +287,25 @@ export class SynthEngine {
     this.filterCutoff = Math.max(80, Math.min(12000, freq));
     if (this.mainFilter && this.ctx) {
       this.mainFilter.frequency.setTargetAtTime(this.filterCutoff, this.ctx.currentTime, 0.04);
+    }
+  }
+
+  setLFOActive(active, bpm, baseCutoff) {
+    if (!this.lfoGain || !this.lfoOsc) return;
+    if (active) {
+      this.lfoOsc.frequency.setValueAtTime(bpm / 60, this.ctx.currentTime);
+      this.lfoGain.gain.setTargetAtTime(baseCutoff * 0.65, this.ctx.currentTime, 0.1);
+      if (this.mainFilter) {
+        this.mainFilter.Q.setTargetAtTime(10, this.ctx.currentTime, 0.1);
+      }
+    } else {
+      this.lfoGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.1);
+    }
+  }
+
+  setLFOFreq(bpm) {
+    if (this.lfoOsc && this.lfoGain && this.lfoGain.gain.value > 0) {
+      this.lfoOsc.frequency.setValueAtTime(bpm / 60, this.ctx.currentTime);
     }
   }
 

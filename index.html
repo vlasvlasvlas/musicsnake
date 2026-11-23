@@ -22,12 +22,6 @@
       <canvas id="musicCanvas"></canvas>
       <div class="nokia-vignette"></div>
     </div>
-    <!-- HUD below frame like playsnake.org -->
-    <div class="nokia-hud">
-      <span id="readoutScore">0</span>
-      <span id="readoutCenter"></span>
-      <span id="readoutLength">L:4</span>
-    </div>
   </main>
 
   <!-- Settings panel (hidden by default) -->
@@ -38,13 +32,6 @@
     </div>
 
     <div class="settings-body">
-
-      <div class="set-row">
-        <label class="toggle-row">
-          <input type="checkbox" id="chkMutate">
-          Mutar parámetros al comer
-        </label>
-      </div>
 
       <div class="set-row">
         <label>Grilla N×N</label>
@@ -64,15 +51,14 @@
 
       <div class="set-row">
         <label>Modo</label>
-        <div class="btn-pair">
-          <button id="btnModeAuto" class="set-btn active">AUTO</button>
-          <button id="btnModeGame" class="set-btn">JUEGO</button>
-        </div>
+        <button id="btnModeToggle" class="set-btn full active">AUTO</button>
       </div>
 
       <div class="set-row">
-        <button id="btnPlayPause" class="set-btn full">▶ PLAY</button>
-        <button id="btnReset" class="set-btn full">↻ RESET</button>
+        <div class="btn-pair">
+          <button id="btnPlayPause" class="set-btn">▶ PLAY</button>
+          <button id="btnReset" class="set-btn">↻ RESET</button>
+        </div>
       </div>
 
       <div class="set-row">
@@ -122,9 +108,9 @@
       <div class="set-row">
         <label>Timbre</label>
         <select id="selWaveform">
+          <option value="sine" selected>Puro (senoidal)</option>
           <option value="triangle">Cálido (triangular)</option>
           <option value="sawtooth">Brillante (sierra)</option>
-          <option value="sine">Puro (senoidal)</option>
           <option value="square">Chiptune (cuadrada)</option>
           <option value="mellotron1">Mellotron 1 (sample)</option>
           <option value="mellotron2">Mellotron 2 (sample)</option>
@@ -141,8 +127,8 @@
       </div>
 
       <div class="set-row">
-        <label>Volumen orbes <span id="valFoodVol" class="val">50%</span></label>
-        <input type="range" id="sliderFoodVol" min="0" max="1" step="0.05" value="0.5">
+        <label>Volumen orbes <span id="valFoodVol" class="val">0%</span></label>
+        <input type="range" id="sliderFoodVol" min="0" max="1" step="0.05" value="0">
       </div>
 
       <div class="set-row">
@@ -176,13 +162,13 @@
       </div>
 
       <div class="set-row">
-        <label>BPM 1 <span id="valBpm1" class="val">110</span></label>
-        <input type="range" id="sliderBpm1" min="20" max="999" step="1" value="110">
+        <label>BPM 1 <span id="valBpm1" class="val">90</span></label>
+        <input type="range" id="sliderBpm1" min="20" max="999" step="1" value="90">
       </div>
 
       <div class="set-row">
-        <label>BPM 2 <span id="valBpm2" class="val">165</span></label>
-        <input type="range" id="sliderBpm2" min="20" max="999" step="1" value="165">
+        <label>BPM 2 (ratio) <span id="valBpm2" class="val">×1.5</span></label>
+        <input type="range" id="sliderBpm2" min="-1" max="1" step="0.01" value="0.29">
       </div>
 
       <div class="set-row">
@@ -198,6 +184,10 @@
       <div class="set-row">
         <label>Resonancia <span id="valRes" class="val">3.5</span></label>
         <input type="range" id="sliderRes" min="0.5" max="12.0" step="0.5" value="3.5">
+      </div>
+
+      <div class="set-row">
+        <button id="btnLFO" class="set-btn full">AUTO FILTER</button>
       </div>
 
       <div class="set-row">
