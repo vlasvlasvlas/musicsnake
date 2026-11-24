@@ -310,7 +310,7 @@ class SnakeSynthApp {
     this.ui.btnMute.addEventListener('click', () => {
       const isMuted = !this.synth.isMuted;
       this.synth.setMute(isMuted);
-      this.ui.btnMute.textContent = isMuted ? '🔇' : '♪';
+      this.ui.btnMute.classList.toggle('muted', isMuted);
     });
 
     // About modal
