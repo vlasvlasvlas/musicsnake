@@ -291,15 +291,17 @@ export class SynthEngine {
   }
 
   setLFOActive(active, bpm, baseCutoff) {
-    if (!this.lfoGain || !this.lfoOsc) return;
+    if (!this.lfoGain || !this.lfoOsc || !this.mainFilter) return;
     if (active) {
+      // Center the filter at a low frequency so the LFO sweeps upward dramatically.
+      // intrinsic value = center, LFO gain = same → sweeps from 0 to 2× center.
+      const center = Math.max(200, baseCutoff * 0.25);
+      this.mainFilter.frequency.setTargetAtTime(center, this.ctx.currentTime, 0.05);
       this.lfoOsc.frequency.setValueAtTime(bpm / 60, this.ctx.currentTime);
-      this.lfoGain.gain.setTargetAtTime(baseCutoff * 0.65, this.ctx.currentTime, 0.1);
-      if (this.mainFilter) {
-        this.mainFilter.Q.setTargetAtTime(10, this.ctx.currentTime, 0.1);
-      }
+      this.lfoGain.gain.setTargetAtTime(center, this.ctx.currentTime, 0.1);
+      this.mainFilter.Q.setTargetAtTime(12, this.ctx.currentTime, 0.1);
     } else {
-      this.lfoGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.1);
+      this.lfoGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.15);
     }
   }
 

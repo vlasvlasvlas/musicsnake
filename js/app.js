@@ -974,7 +974,9 @@ class SnakeSynthApp {
     const baseReverb = parseFloat(this.ui.sliderReverb.value);
     const baseDelayFb = parseFloat(this.ui.sliderDelay.value);
     const timbre = computeTimbreByLength(this.snake.segments.length, baseCutoff, baseReverb, baseDelayFb);
-    this.synth.setFilterCutoff(Math.min(9500, timbre.cutoff * this.foodBoost.cutoff));
+    if (!this.lfoActive) {
+      this.synth.setFilterCutoff(Math.min(9500, timbre.cutoff * this.foodBoost.cutoff));
+    }
     this.synth.setReverbMix(Math.min(0.95, timbre.reverb * this.foodBoost.reverb));
     // delay time stays at user-set 0.35 (per spec §5.8 — only feedback modulates by length)
     this.synth.setDelayParams(0.35, timbre.delay, timbre.delay * 0.7);
