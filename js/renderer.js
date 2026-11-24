@@ -217,14 +217,11 @@ export class Renderer {
   }
 
   drawHUD(ctx, snake, voices, w, h) {
+    if (snake.score === 0) return;
     ctx.fillStyle = LCD_INK;
     ctx.font = 'bold 13px monospace';
     ctx.textBaseline = 'bottom';
-
     ctx.textAlign = 'left';
-    ctx.fillText(String(snake.score).padStart(4, '0'), 6, h - 5);
-
-    ctx.textAlign = 'right';
-    ctx.fillText(`L:${snake.segments.length}`, w - 6, h - 5);
+    ctx.fillText(`O:${snake.score / 10}`, 6, h - 5);
   }
 }
